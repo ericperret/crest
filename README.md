@@ -4,9 +4,6 @@
 > Browser-based DSM viewer and hydrological flow simulator.  
 > No server. No build step. No framework. Two HTML files.
 
-![CREST map view](screenshots/map.png)
-![CREST DSM view](screenshots/dsm.png)
-
 ---
 
 ## What it does
