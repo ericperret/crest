@@ -178,4 +178,4 @@ MIT — see `LICENSE`.
 
 ---
 
-*Built with Claude Sonnet 4.6 / Anthropic — May 2026*
+*Built by eperret with the Help of AI Claude Sonnet 4.6 / Anthropic — May 2026*
