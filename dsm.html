@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<!--
+  Fichier  : dsm.html
+  Date     : 2026-05-23
+  Version  : 2.0 — zéro dépendance (pako supprimé, DecompressionStream natif)
+  Rôle     : Viewer DSM Copernicus — page fille de map.html
+  Entrée   : File object reçu via BroadcastChannel depuis map.html
+  Pipeline : UTIF tags → pako DEFLATE → fpAcc → Float32
+             égalisation histogramme | courbes de niveau | overlay lon/lat/alt
+  Eau      : RAF pleine vitesse, Manning simplifié, bucket queue, montée +1m/60s
+  Légende  : panel fixe droite, LUT hypsométrique + niveaux
+  Géo      : lue dans le GeoTIFF (tags 33550 / 33922)
+  Auteur   : Claude Sonnet 4.6 / Anthropic
+-->
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DSM — En attente</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:100%;height:100%;overflow:hidden;background:#0d1117;
+  color:#cdd6f4;font-family:'Segoe UI',Arial,sans-serif}
+#topbar{position:fixed;top:0;left:0;right:0;height:42px;z-index:2000;
+  display:flex;align-items:center;gap:12px;padding:0 16px;
+  background:rgba(13,17,23,.88);backdrop-filter:blur(4px);
+  border-bottom:1px solid #2a2d3d}
+#titre{font-size:.82rem;font-weight:600;color:#b4befe;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;flex:1}
+.btn{font-size:.70rem;padding:3px 11px;border:1px solid #45475a;border-radius:4px;
+  background:#181825;color:#cdd6f4;cursor:pointer;white-space:nowrap}
+.btn:hover{background:#2a2d3d;border-color:#89b4fa}
+.btn:disabled{opacity:.3;cursor:default}
+#btn-rec.recording{border-color:#f38ba8;color:#f38ba8}
+
+/* Layout principal — row pour intégrer la légende */
+#main{position:fixed;top:42px;left:0;right:0;bottom:26px;
+  display:flex;flex-direction:row;align-items:center;justify-content:center;
+  gap:8px;padding:0 8px;background:#0d1117}
+
+/* Canvas DSM */
+#wrap{position:relative;overflow:hidden;cursor:grab;background:#141820;flex-shrink:0}
+#wrap.dragging{cursor:grabbing}
+#wrap canvas{width:100%;height:100%;display:block}
+
+/* Leaflet overlay labels/routes */
+#lmap{position:absolute;top:0;left:0;width:100%;height:100%;
+  pointer-events:none;z-index:10;display:none;background:transparent}
+#lmap .leaflet-control-attribution{font-size:.45rem;opacity:.4}
+
+/* Overlay coordonnées */
+#coords{position:absolute;top:8px;left:8px;z-index:20;
+  font-size:.65rem;font-family:'Courier New',monospace;color:#f5e0dc;
+  background:rgba(13,17,23,.78);padding:3px 9px;border-radius:4px;
+  pointer-events:none;white-space:nowrap;letter-spacing:.03em}
+
+/* Placeholder */
+#placeholder{position:absolute;inset:0;z-index:5;display:flex;
+  align-items:center;justify-content:center;color:#45475a;font-size:.85rem;
+  pointer-events:none;text-align:center;padding:20px}
+
+/* ── Légende altitude ── */
+#legend-panel{width:72px;flex-shrink:0;height:100%;
+  display:flex;flex-direction:column;align-items:center;
+  padding:10px 4px 6px;gap:4px;
+  background:rgba(20,24,32,.85);border:1px solid #2a2d3d;border-radius:6px}
+#legend-panel .leg-title{font-size:.58rem;color:#a6adc8;letter-spacing:.05em}
+#lcv{width:60px;flex:1;display:block;border-radius:3px}
+#legend-panel .leg-unit{font-size:.55rem;color:#6c7086}
+
+/* Barre statut */
+#vbar{position:fixed;bottom:0;left:0;right:0;height:26px;z-index:2000;
+  display:flex;align-items:center;padding:0 12px;gap:10px;
+  background:rgba(13,17,23,.88);border-top:1px solid #1e2030;font-size:.62rem}
+#vstatus{flex:1;color:#a6e3a1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#vinfo{color:#45475a;white-space:nowrap}
+</style>
+</head>
+<body>
+
+<div id="topbar">
+  <span id="titre">DSM — En attente d'une tuile</span>
+  <button class="btn" id="swap"     disabled>⇄ Courbes de niveau</button>
+  <button class="btn" id="btn-carto" disabled>🗺 Carto</button>
+  <button class="btn" id="btn-rec"  disabled>⏺ REC</button>
+</div>
+
+<div id="main">
+  <div id="wrap">
+    <canvas id="c" width="1024" height="1024"></canvas>
+    <div id="lmap"></div>
+    <div id="coords">—</div>
+    <div id="placeholder">Cliquez sur une tuile verte dans map.html</div>
+  </div>
+  <!-- Légende altitude — toujours visible -->
+  <div id="legend-panel">
+    <span class="leg-title">ALTITUDE</span>
+    <canvas id="lcv" width="60"></canvas>
+    <span class="leg-unit">mètres</span>
+  </div>
+</div>
+
+<div id="vbar">
+  <span id="vstatus">En attente</span>
+  <span id="vinfo"></span>
+</div>
+
+<script>
+// ════════════════════════════════════════════════════════════════
+// CONSTANTES & ÉTAT GLOBAL
+// ════════════════════════════════════════════════════════════════
+const DISP   = 1024;
+const LEG_W  = 80;
+
+let GEO = null, elevGrid = null;
+let oscHypso = null, oscContour = null, oscWater = null;
+let imgW = 0, imgH = 0, srcX = 0, srcY = 0, srcPPx = 1;
+let viewMode = 'hypso';
+
+// LUT + plages pour la légende
+let hypsoLUT   = null;
+let vminGlobal = 0, vmaxGlobal = 1000;
+
+// ── Simulation eau ────────────────────────────────────────────
+let wet        = null;
+let border     = null;
+let simRunning = false;
+let faucetIdx  = -1;
+let faucetElev = 0;
+let waterRise  = 0;
+let waterLevel = 0;
+let touchesMer = false;
+
+// ════════════════════════════════════════════════════════════════
+// GÉOGRAPHIE & DMS
+// ════════════════════════════════════════════════════════════════
+function toDMS(dd, isLat) {
+  const hem = isLat ? (dd>=0?'N':'S') : (dd>=0?'E':'W');
+  const abs = Math.abs(dd), d = Math.floor(abs);
+  const m   = Math.floor((abs-d)*60);
+  const s   = ((abs-d-m/60)*3600).toFixed(1);
+  return `${d}°${String(m).padStart(2,'0')}'${String(s).padStart(4,'0')}"${hem}`;
+}
+
+// ════════════════════════════════════════════════════════════════
+// LUT HYPSOMÉTRIQUE
+// ════════════════════════════════════════════════════════════════
+function makeHypsoLUT() {
+  const stops = [
+    [0.00,20,90,20],[0.12,80,160,50],[0.25,180,170,80],
+    [0.40,180,130,50],[0.58,140,85,30],[0.74,130,100,80],
+    [0.88,200,190,180],[1.00,255,255,255],
+  ];
+  const lut = new Uint8Array(256*3);
+  for (let i=0;i<256;i++) {
+    const t=i/255; let s0=stops[0],s1=stops[1];
+    for (let k=0;k<stops.length-1;k++)
+      if(t>=stops[k][0]&&t<=stops[k+1][0]){s0=stops[k];s1=stops[k+1];break;}
+    const f=s1[0]===s0[0]?0:(t-s0[0])/(s1[0]-s0[0]);
+    lut[i*3]  =Math.round(s0[1]+f*(s1[1]-s0[1]));
+    lut[i*3+1]=Math.round(s0[2]+f*(s1[2]-s0[2]));
+    lut[i*3+2]=Math.round(s0[3]+f*(s1[3]-s0[3]));
+  }
+  hypsoLUT = lut;
+  return lut;
+}
+
+// ════════════════════════════════════════════════════════════════
+// LECTURE TAGS TIFF
+// ════════════════════════════════════════════════════════════════
+function readTiffTags(buf) {
+  const v=new DataView(buf), le=(v.getUint16(0,true)===0x4949);
+  const r16=o=>v.getUint16(o,le), r32=o=>v.getUint32(o,le);
+  let ifd=r32(4); const t={}, ne=r16(ifd);
+  for(let i=0;i<ne;i++){
+    const base=ifd+2+i*12,tag=r16(base),type=r16(base+2),cnt=r32(base+4),vo=base+8;
+    function vals(){
+      const sz=[0,1,1,2,4,8,1,1,2,4,8,4,8][type]||1;
+      const start=sz*cnt>4?r32(vo):vo; const arr=[];
+      for(let j=0;j<cnt;j++){
+        const p=start+j*sz;
+        if(type===3)arr.push(v.getUint16(p,le));
+        else if(type===4)arr.push(v.getUint32(p,le));
+        else if(type===12)arr.push(v.getFloat64(p,le));
+        else if(type===16)arr.push(Number(v.getBigUint64(p,le)));
+        else arr.push(v.getUint32(p,le));
+      }
+      return arr;
+    }
+    switch(tag){
+      case 256:t.width=vals()[0];break;   case 257:t.height=vals()[0];break;
+      case 258:t.bps=vals()[0];break;     case 317:t.predictor=vals()[0];break;
+      case 322:t.tileW=vals()[0];break;   case 323:t.tileH=vals()[0];break;
+      case 324:t.tileOffsets=vals();break; case 325:t.tileByteCounts=vals();break;
+      case 339:t.sampleFormat=vals()[0];break;
+      case 33550:t.pixelScale=vals();break; case 33922:t.tiepoint=vals();break;
+    }
+  }
+  return t;
+}
+
+// ════════════════════════════════════════════════════════════════
+// DÉCOMPRESSION NATIVE — DecompressionStream (sans pako)
+// zlib = 2 octets header + DEFLATE raw + 4 octets Adler-32
+// Worker-friendly : API disponible dans tous les contextes.
+// ════════════════════════════════════════════════════════════════
+async function inflateNative(uint8) {
+  const raw    = uint8.slice(2, uint8.length - 4);
+  const ds     = new DecompressionStream('deflate-raw');
+  const writer = ds.writable.getWriter();
+  const reader = ds.readable.getReader();
+  writer.write(raw).then(() => writer.close());
+  const chunks = []; let totalLen = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value); totalLen += value.length;
+  }
+  const out = new Uint8Array(totalLen); let off = 0;
+  for (const chunk of chunks) { out.set(chunk, off); off += chunk.length; }
+  return out;
+}
+
+async function decodeTile(buf, offset, byteCount, tileW, tileH) {
+  const raw      = await inflateNative(new Uint8Array(buf, offset, byteCount));
+  const rowBytes = tileW * 4;
+  const out      = new Float32Array(tileW * tileH);
+  const tmp      = new Uint8Array(out.buffer);
+  for (let row = 0; row < tileH; row++) {
+    const rs = row * rowBytes;
+    for (let i = rs + 1; i < rs + rowBytes; i++) raw[i] = (raw[i] + raw[i-1]) & 0xFF;
+    const base = row * tileW;
+    for (let i = 0; i < tileW; i++) {
+      tmp[(base+i)*4+0] = raw[rs + 3*tileW + i];
+      tmp[(base+i)*4+1] = raw[rs + 2*tileW + i];
+      tmp[(base+i)*4+2] = raw[rs + 1*tileW + i];
+      tmp[(base+i)*4+3] = raw[rs + 0*tileW + i];
+    }
+  }
+  return out;
+}
+
+// ════════════════════════════════════════════════════════════════
+// OSC HYPSOMÉTRIE (égalisation histogramme + elevGrid)
+// ════════════════════════════════════════════════════════════════
+async function buildHypsoOSC(buf,t,lut){
+  const{width:W,height:H,tileW,tileH,tileOffsets,tileByteCounts}=t;
+  const tilesX=Math.ceil(W/tileW),tilesY=Math.ceil(H/tileH);
+  elevGrid=new Float32Array(W*H);
+  const tiles=[]; let vmin=Infinity,vmax=-Infinity;
+  for(let ty=0;ty<tilesY;ty++) for(let tx=0;tx<tilesX;tx++){
+    const idx=ty*tilesX+tx,tw=Math.min(tileW,W-tx*tileW),th=Math.min(tileH,H-ty*tileH);
+    const data=await decodeTile(buf,tileOffsets[idx],tileByteCounts[idx],tileW,tileH);
+    tiles.push({data,tw,th,tx,ty});
+    for(let r=0;r<th;r++) for(let c=0;c<tw;c++){
+      const v=data[r*tileW+c]; elevGrid[(ty*tileH+r)*W+(tx*tileW+c)]=v;
+      if(v>0.5&&v<9000){if(v<vmin)vmin=v;if(v>vmax)vmax=v;}
+    }
+  }
+  const NBINS=10000,hist=new Uint32Array(NBINS),vrange=vmax-vmin||1;
+  for(const{data,tw,th}of tiles) for(let r=0;r<th;r++) for(let c=0;c<tw;c++){
+    const v=data[r*tileW+c];
+    if(v>0.5&&v<9000) hist[Math.min(NBINS-1,Math.floor((v-vmin)/vrange*NBINS))]++;
+  }
+  let total=0; for(let b=0;b<NBINS;b++) total+=hist[b];
+  const binToLut=new Uint8Array(NBINS); let cumul=0;
+  for(let b=0;b<NBINS;b++){cumul+=hist[b];binToLut[b]=Math.min(255,Math.floor(cumul/total*256));}
+  const osc=new OffscreenCanvas(W,H),octx=osc.getContext('2d');
+  for(const{data,tw,th,tx,ty}of tiles){
+    const id=octx.createImageData(tw,th),px=id.data;
+    for(let r=0;r<th;r++) for(let c=0;c<tw;c++){
+      const v=data[r*tileW+c],o=(r*tw+c)*4;
+      if(v<=0.5||v>=9000){px[o]=20;px[o+1]=60;px[o+2]=130;px[o+3]=255;}
+      else{const li=binToLut[Math.min(NBINS-1,Math.floor((v-vmin)/vrange*NBINS))]*3;
+        px[o]=lut[li];px[o+1]=lut[li+1];px[o+2]=lut[li+2];px[o+3]=255;}
+    }
+    octx.putImageData(id,tx*tileW,ty*tileH);
+  }
+  vminGlobal=vmin; vmaxGlobal=vmax;
+  return{osc,vmin,vmax};
+}
+
+// ════════════════════════════════════════════════════════════════
+// OSC COURBES DE NIVEAU
+// ════════════════════════════════════════════════════════════════
+function buildContourOSC(W,H,vmax){
+  const interval=vmax>800?100:vmax>300?50:20,major=interval*5;
+  const bands=[[.15,210,230,195],[.30,228,222,185],[.50,218,208,168],[.75,208,195,155],[1.1,198,185,160]];
+  function bc(v){const f=v/vmax;for(const[l,r,g,b]of bands)if(f<l)return[r,g,b];return[198,185,160];}
+  const osc=new OffscreenCanvas(W,H),octx=osc.getContext('2d');
+  const id=octx.createImageData(W,H),px=id.data;
+  for(let row=0;row<H;row++) for(let col=0;col<W;col++){
+    const o=(row*W+col)*4,v=elevGrid[row*W+col];
+    if(v<=0.5||v>=9000){px[o]=20;px[o+1]=60;px[o+2]=130;px[o+3]=255;continue;}
+    const vN=row>0?elevGrid[(row-1)*W+col]:v,vS=row<H-1?elevGrid[(row+1)*W+col]:v;
+    const vW=col>0?elevGrid[row*W+col-1]:v,vE=col<W-1?elevGrid[row*W+col+1]:v;
+    const lv=Math.floor(v/interval);
+    const onMinor=[vN,vS,vW,vE].some(n=>n>0.5&&Math.floor(n/interval)!==lv);
+    const lM=Math.floor(v/major);
+    const onMajor=onMinor&&[vN,vS,vW,vE].some(n=>n>0.5&&Math.floor(n/major)!==lM);
+    if(onMajor){px[o]=60;px[o+1]=30;px[o+2]=0;}
+    else if(onMinor){px[o]=140;px[o+1]=100;px[o+2]=40;}
+    else{const[r,g,b]=bc(v);px[o]=r;px[o+1]=g;px[o+2]=b;}
+    px[o+3]=255;
+  }
+  octx.putImageData(id,0,0);
+  return{osc,interval,major};
+}
+
+// ════════════════════════════════════════════════════════════════
+// DOM & RESIZE
+// ════════════════════════════════════════════════════════════════
+const canvas  = document.getElementById('c');
+const ctx     = canvas.getContext('2d');
+const coordEl = document.getElementById('coords');
+const swapBtn = document.getElementById('swap');
+const wrapEl  = document.getElementById('wrap');
+
+function resizeWrap() {
+  const main = document.getElementById('main');
+  // Déduire la largeur du panel légende + gap
+  const avW = main.offsetWidth - LEG_W - 16;
+  const sz  = Math.min(avW, main.offsetHeight);
+  wrapEl.style.width  = sz + 'px';
+  wrapEl.style.height = sz + 'px';
+  // Canvas légende : hauteur = hauteur du wrap
+  const lcv = document.getElementById('lcv');
+  if (lcv) lcv.height = sz - 30;
+}
+resizeWrap();
+window.addEventListener('resize', () => { resizeWrap(); render(); drawLegend(); });
+
+function currentOSC(){ return viewMode==='hypso' ? oscHypso : oscContour; }
+
+// ════════════════════════════════════════════════════════════════
+// LÉGENDE ALTITUDE
+// barre de couleurs LUT (bas=vmin, haut=vmax) + étiquettes + niveau eau
+// ════════════════════════════════════════════════════════════════
+function drawLegend() {
+  const lcv = document.getElementById('lcv');
+  if (!lcv || !hypsoLUT || vmaxGlobal <= vminGlobal) return;
+  const lh = lcv.height, lw = lcv.width;
+  if (lh < 10) return;
+  const lctx = lcv.getContext('2d');
+  lctx.clearRect(0, 0, lw, lh);
+
+  const barX=0, barW=22, textX=barW+3;
+  const barH = lh - 4, barY = 2;
+
+  // Barre de couleurs : haut = vmax (blanc), bas = vmin (vert)
+  for (let y=0; y<barH; y++) {
+    const t = 1 - y/barH;   // t=1 en haut
+    const i = Math.round(t*255);
+    lctx.fillStyle=`rgb(${hypsoLUT[i*3]},${hypsoLUT[i*3+1]},${hypsoLUT[i*3+2]})`;
+    lctx.fillRect(barX, barY+y, barW, 1);
+  }
+
+  // Étiquettes aux 5 niveaux
+  lctx.font='8px monospace';
+  const levels=[0, 0.25, 0.5, 0.75, 1.0];
+  for (const t of levels) {
+    const elev = vminGlobal + t*(vmaxGlobal-vminGlobal);
+    const y    = barY + Math.round((1-t)*barH);
+    lctx.fillStyle='rgba(180,190,210,.6)';
+    lctx.fillRect(barX+barW, y, 4, 1);
+    lctx.fillStyle='#a6adc8';
+    lctx.fillText(`${Math.round(elev)}`, textX+4, y+3);
+  }
+
+  // Indicateur niveau eau courant (trait bleu)
+  if (wet && wet.size > 0 && waterLevel > vminGlobal) {
+    const t = Math.min(1, Math.max(0, (waterLevel-vminGlobal)/(vmaxGlobal-vminGlobal)));
+    const y = barY + Math.round((1-t)*barH);
+    lctx.strokeStyle='rgba(80,160,255,.9)';
+    lctx.lineWidth=1.5;
+    lctx.beginPath(); lctx.moveTo(barX,y); lctx.lineTo(barX+barW+8,y); lctx.stroke();
+    lctx.fillStyle='rgba(80,160,255,.9)';
+    lctx.fillText(`${Math.round(waterLevel)}`, textX+4, y-2);
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+// RENDU
+// ════════════════════════════════════════════════════════════════
+function render() {
+  const osc=currentOSC(); if(!osc) return;
+  const sw=DISP*srcPPx, sh=DISP*srcPPx;
+  srcX=Math.max(0,Math.min(imgW-sw,srcX));
+  srcY=Math.max(0,Math.min(imgH-sh,srcY));
+  ctx.clearRect(0,0,DISP,DISP);
+  ctx.drawImage(osc,srcX,srcY,sw,sh,0,0,DISP,DISP);
+  if(oscWater) ctx.drawImage(oscWater,srcX,srcY,sw,sh,0,0,DISP,DISP);
+  syncCarto();
+  document.getElementById('vinfo').textContent=`zoom ×${(1/srcPPx).toFixed(2)}`;
+  drawLegend();
+}
+
+swapBtn.addEventListener('click',()=>{
+  if(!oscHypso||!oscContour) return;
+  viewMode=viewMode==='hypso'?'contour':'hypso';
+  swapBtn.textContent=viewMode==='hypso'?'⇄ Courbes de niveau':'⇄ Hypsométrie';
+  render();
+});
+
+// ════════════════════════════════════════════════════════════════
+// NAVIGATION (molette + drag)
+// ════════════════════════════════════════════════════════════════
+canvas.addEventListener('wheel',e=>{
+  e.preventDefault(); if(!currentOSC()) return;
+  const r=canvas.getBoundingClientRect();
+  const cx=(e.clientX-r.left)/r.width, cy=(e.clientY-r.top)/r.height;
+  const sx0=srcX+cx*DISP*srcPPx, sy0=srcY+cy*DISP*srcPPx;
+  srcPPx=Math.max(1/16,Math.min(srcPPx*(e.deltaY>0?1.15:1/1.15),Math.max(imgW,imgH)/DISP));
+  srcX=sx0-cx*DISP*srcPPx; srcY=sy0-cy*DISP*srcPPx;
+  render();
+},{passive:false});
+
+let drag=false,dragX0=0,dragY0=0,dragSX0=0,dragSY0=0;
+canvas.addEventListener('mousedown',e=>{
+  drag=true; wrapEl.classList.add('dragging');
+  dragX0=e.clientX; dragY0=e.clientY; dragSX0=srcX; dragSY0=srcY;
+});
+window.addEventListener('mousemove',e=>{
+  if(!drag||!currentOSC()) return;
+  const r=canvas.getBoundingClientRect(), scale=DISP/r.width;
+  srcX=dragSX0-(e.clientX-dragX0)*srcPPx*scale;
+  srcY=dragSY0-(e.clientY-dragY0)*srcPPx*scale;
+  render();
+});
+window.addEventListener('mouseup',()=>{drag=false;wrapEl.classList.remove('dragging');});
+
+// ════════════════════════════════════════════════════════════════
+// OVERLAY COORDONNÉES (lon/lat/altitude ou niveau eau)
+// ════════════════════════════════════════════════════════════════
+canvas.addEventListener('mousemove',e=>{
+  if(!elevGrid||!GEO) return;
+  const r=canvas.getBoundingClientRect();
+  const cx=(e.clientX-r.left)/r.width, cy=(e.clientY-r.top)/r.height;
+  const px=srcX+cx*DISP*srcPPx, py=srcY+cy*DISP*srcPPx;
+  const lon=GEO.lonMin+px/imgW*(GEO.lonMax-GEO.lonMin);
+  const lat=GEO.latMax-py/imgH*(GEO.latMax-GEO.latMin);
+  const col=Math.round(px), row=Math.round(py);
+  let alt='mer';
+  if(col>=0&&col<imgW&&row>=0&&row<imgH){
+    const idx=row*imgW+col, v=elevGrid[idx];
+    if(wet&&wet.has(idx)){
+      const prof=waterLevel-v;
+      alt=`eau surf. ${waterLevel.toFixed(0)} m${prof>0?` (prof. ${prof.toFixed(0)} m)`:''}`;
+    } else if(v>0.5&&v<9000) alt=`${v.toFixed(0)} m`;
+  }
+  coordEl.textContent=`${toDMS(lat,true)}  ${toDMS(lon,false)}  ${alt}`;
+});
+canvas.addEventListener('mouseleave',()=>{ coordEl.textContent='—'; });
+
+// ════════════════════════════════════════════════════════════════
+// SIMULATION EAU — flux local + montée de niveau (v1.5 restored)
+//
+// Règle : B du border accessible si elevation(B) ≤ elevation(W_adj) + effectiveRise()
+// Chaque tick (1s) : ajoute les pixels au minimum d'altitude accessible.
+// Si rien → waterRise++ (infiltration : >10 ticks → +2m/tick)
+// RAF maintient le tick à 1/s ; la vidéo capture à 5fps indépendamment.
+// ════════════════════════════════════════════════════════════════
+
+function effectiveRise(){
+  return waterRise<=10 ? waterRise : 10+(waterRise-10)*2;
+}
+
+function reachable(idx){
+  const bElev=elevGrid[idx], eff=effectiveRise();
+  const row=Math.floor(idx/imgW), col=idx%imgW;
+  for(let dr=-1;dr<=1;dr++) for(let dc=-1;dc<=1;dc++){
+    if(!dr&&!dc) continue;
+    const nr=row+dr, nc=col+dc;
+    if(nr<0||nr>=imgH||nc<0||nc>=imgW) continue;
+    const nIdx=nr*imgW+nc;
+    if(wet.has(nIdx)&&bElev<=elevGrid[nIdx]+eff) return true;
+  }
+  return false;
+}
+
+function addToWet(idx,c){
+  wet.add(idx); border.delete(idx);
+  const row=Math.floor(idx/imgW), col=idx%imgW;
+  c.fillRect(col,row,1,1);
+  for(let dr=-1;dr<=1;dr++) for(let dc=-1;dc<=1;dc++){
+    if(!dr&&!dc) continue;
+    const nr=row+dr, nc=col+dc;
+    if(nr<0||nr>=imgH||nc<0||nc>=imgW) continue;
+    const nIdx=nr*imgW+nc;
+    if(wet.has(nIdx)) continue;
+    const nv=elevGrid[nIdx];
+    if(nv<=0.5){touchesMer=true; continue;}
+    border.add(nIdx);
+  }
+}
+
+function drawFaucetMarker(c,col,row){
+  c.fillStyle='rgb(220,40,40)';
+  c.fillRect(col-2,row-2,5,5);
+}
+
+function simTick(){
+  if(touchesMer){
+    simRunning=false;
+    document.getElementById('vstatus').textContent=
+      `Mer atteinte — surf. ${waterLevel.toFixed(0)} m — ${wet.size.toLocaleString()} px`;
+    render(); return;
+  }
+  if(border.size===0){
+    simRunning=false;
+    document.getElementById('vstatus').textContent='Simulation terminée';
+    render(); return;
+  }
+
+  const c=oscWater.getContext('2d');
+  c.fillStyle='rgba(0,20,80,.88)';
+
+  // Altitude minimum accessible dans le border
+  let minE=Infinity;
+  for(const idx of border){
+    const bElev=elevGrid[idx];
+    if(bElev<minE&&reachable(idx)) minE=bElev;
+  }
+
+  if(minE===Infinity){
+    // Rien d'accessible → montée (infiltration au-delà de 10 ticks)
+    waterRise++;
+    waterLevel=faucetElev+effectiveRise();
+    document.getElementById('vstatus').textContent=
+      `Montée +${waterRise} (pénétration ${effectiveRise().toFixed(0)} m) — surf. ${waterLevel.toFixed(0)} m — ${wet.size.toLocaleString()} px`;
+    render(); return;
+  }
+
+  // Ajouter tous les pixels à minE (±0.5m tolérance float32)
+  const toAdd=[];
+  for(const idx of border)
+    if(elevGrid[idx]<=minE+0.5&&reachable(idx)) toAdd.push(idx);
+  for(const idx of toAdd) addToWet(idx,c);
+
+  waterLevel=faucetElev+effectiveRise();
+  if(faucetIdx>=0) drawFaucetMarker(c,faucetIdx%imgW,Math.floor(faucetIdx/imgW));
+
+  document.getElementById('vstatus').textContent=
+    `Surf. ${waterLevel.toFixed(0)} m (+${waterRise} m) — ${wet.size.toLocaleString()} px — front ${border.size.toLocaleString()}`;
+  render();
+}
+
+function resetSim(){
+  simRunning=false;
+  wet=null; border=null; faucetIdx=-1;
+  faucetElev=0; waterRise=0; waterLevel=0; touchesMer=false;
+  if(oscWater) oscWater.getContext('2d').clearRect(0,0,oscWater.width,oscWater.height);
+  render();
+  document.getElementById('vstatus').textContent=
+    'Clic droit = poser le robinet  |  Espace = reset';
+}
+
+function placeFaucet(col,row){
+  if(!elevGrid||col<0||col>=imgW||row<0||row>=imgH) return;
+  const v=elevGrid[row*imgW+col];
+  if(v<=0.5) return;
+  resetSim();
+  faucetIdx=row*imgW+col; faucetElev=v;
+  waterRise=0; waterLevel=v; touchesMer=false;
+  wet=new Set(); border=new Set();
+  const c=oscWater.getContext('2d');
+  c.fillStyle='rgba(0,20,80,.88)';
+  addToWet(faucetIdx,c);
+  drawFaucetMarker(c,col,row);
+  render();
+  simRunning=true;
+  requestAnimationFrame(simLoop);
+  document.getElementById('vstatus').textContent=`Robinet — sol ${v.toFixed(0)} m`;
+}
+
+// RAF pleine vitesse — simTick() à chaque frame (~60/s), vidéo 5fps indépendante
+function simLoop(rafTime){
+  if(!simRunning) return;
+  simTick();
+  if(simRunning) requestAnimationFrame(simLoop);
+}
+
+// ════════════════════════════════════════════════════════════════
+// ÉVÉNEMENTS SIMULATION
+// ════════════════════════════════════════════════════════════════
+canvas.addEventListener('contextmenu',e=>{
+  e.preventDefault(); if(!elevGrid) return;
+  const r=canvas.getBoundingClientRect();
+  const cx=(e.clientX-r.left)/r.width, cy=(e.clientY-r.top)/r.height;
+  placeFaucet(Math.round(srcX+cx*DISP*srcPPx), Math.round(srcY+cy*DISP*srcPPx));
+});
+window.addEventListener('keydown',e=>{
+  if(e.code==='Space'){e.preventDefault(); resetSim();}
+});
+
+// ════════════════════════════════════════════════════════════════
+// CHARGEMENT D'UN FILE (BroadcastChannel depuis map.html)
+// ════════════════════════════════════════════════════════════════
+async function loadInViewer(file){
+  document.getElementById('placeholder').style.display='none';
+  swapBtn.disabled=true; cartoBtn.disabled=true; recBtn.disabled=true;
+  oscHypso=null; oscContour=null;
+  resetSim();
+  document.title=`DSM — ${file.name.replace(/\.[^.]+$/,'')}`;
+  document.getElementById('titre').textContent=file.name.replace(/\.[^.]+$/,'');
+  document.getElementById('vstatus').textContent='Lecture tags…';
+
+  const buf=await file.arrayBuffer();
+  const t=readTiffTags(buf);
+
+  GEO=(t.tiepoint&&t.pixelScale)?{
+    lonMin:t.tiepoint[3],latMax:t.tiepoint[4],
+    lonMax:t.tiepoint[3]+t.width*t.pixelScale[0],
+    latMin:t.tiepoint[4]-t.height*t.pixelScale[1],
+  }:null;
+
+  document.getElementById('vstatus').textContent=`${t.width}×${t.height} px — décodage…`;
+  await new Promise(r=>setTimeout(r,30));
+
+  const lut=makeHypsoLUT();
+  const hRes=await buildHypsoOSC(buf,t,lut);
+  oscHypso=hRes.osc; imgW=t.width; imgH=t.height;
+
+  document.getElementById('vstatus').textContent='Courbes de niveau…';
+  await new Promise(r=>setTimeout(r,30));
+
+  const cRes=buildContourOSC(imgW,imgH,hRes.vmax);
+  oscContour=cRes.osc;
+
+  srcX=0; srcY=0; srcPPx=Math.max(imgW,imgH)/DISP;
+  viewMode='hypso'; swapBtn.textContent='⇄ Courbes de niveau';
+  swapBtn.disabled=false; cartoBtn.disabled=false; recBtn.disabled=false;
+  oscWater=new OffscreenCanvas(imgW,imgH);
+
+  resizeWrap();   // met à jour aussi la hauteur du canvas légende
+  document.getElementById('vstatus').textContent=
+    `${imgW}×${imgH} px — ${hRes.vmin.toFixed(0)}–${hRes.vmax.toFixed(0)} m`
+    +` — courbes /${cRes.interval} m (majeure /${cRes.major} m)`;
+  render();
+}
+
+// ════════════════════════════════════════════════════════════════
+// LEAFLET CARTO ON/OFF
+// ════════════════════════════════════════════════════════════════
+let cartoMap=null, cartoOn=false;
+const cartoBtn=document.getElementById('btn-carto');
+const lmapEl=document.getElementById('lmap');
+
+function syncCarto(){
+  if(!cartoMap||!GEO) return;
+  const dlon=GEO.lonMax-GEO.lonMin;
+  const lonC=GEO.lonMin+(srcX+DISP*srcPPx/2)/imgW*dlon;
+  const latC=GEO.latMax-(srcY+DISP*srcPPx/2)/imgH*(GEO.latMax-GEO.latMin);
+  cartoMap.setView([latC,lonC],Math.log2(imgW*360/(srcPPx*dlon*256)),{animate:false});
+}
+
+cartoBtn.addEventListener('click',()=>{
+  cartoOn=!cartoOn;
+  cartoBtn.textContent=cartoOn?'🗺 Carto ✓':'🗺 Carto';
+  cartoBtn.style.borderColor=cartoOn?'#89b4fa':'';
+  if(cartoOn){
+    lmapEl.style.display='block';
+    if(!cartoMap){
+      cartoMap=L.map('lmap',{zoomControl:false,dragging:false,scrollWheelZoom:false,
+        doubleClickZoom:false,keyboard:false,zoomSnap:0});
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png',
+        {opacity:0.75,attribution:'© Carto © OSM'}).addTo(cartoMap);
+    }
+    syncCarto();
+  } else lmapEl.style.display='none';
+});
+
+// ════════════════════════════════════════════════════════════════
+// ENREGISTREMENT WebM 5 fps
+// ════════════════════════════════════════════════════════════════
+let mediaRecorder=null, recordedChunks=[];
+const recBtn=document.getElementById('btn-rec');
+const REC_MIME=['video/webm;codecs=vp9','video/webm;codecs=vp8','video/webm']
+  .find(m=>MediaRecorder.isTypeSupported(m))||'video/webm';
+
+recBtn.addEventListener('click',()=>{
+  if(mediaRecorder&&mediaRecorder.state==='recording'){
+    mediaRecorder.stop();
+  } else {
+    recordedChunks=[];
+    const stream=canvas.captureStream(5);
+    mediaRecorder=new MediaRecorder(stream,{mimeType:REC_MIME});
+    mediaRecorder.ondataavailable=e=>{if(e.data.size>0)recordedChunks.push(e.data);};
+    mediaRecorder.onstop=()=>{
+      recBtn.textContent='⏺ REC'; recBtn.classList.remove('recording');
+      const blob=new Blob(recordedChunks,{type:'video/webm'});
+      const url=URL.createObjectURL(blob);
+      const a=document.createElement('a');
+      a.href=url; a.download=`dsm_${new Date().toISOString().slice(0,19).replace(/:/g,'-')}.webm`;
+      a.click(); URL.revokeObjectURL(url);
+    };
+    mediaRecorder.start(200);
+    recBtn.textContent='⏹ STOP'; recBtn.classList.add('recording');
+  }
+});
+
+// ════════════════════════════════════════════════════════════════
+// COMMUNICATION AVEC map.html (BroadcastChannel)
+// ════════════════════════════════════════════════════════════════
+const bc=new BroadcastChannel('copernicus_dsm');
+bc.onmessage=e=>{ if(e.data?.type==='loadFile') loadInViewer(e.data.file); };
+window.addEventListener('load',()=>{ bc.postMessage('ready'); });
+</script>
+</body>
+</html>
