@@ -3,8 +3,230 @@
 <head>
 <!--
   Fichier  : dsm.html
-  Date     : 2026-06-10
-  Version  : 3.7 — Recalcul auto jour/année (debounce 150ms, garde ombreHorizonCopy) ;
+  Date     : 2026-07-15
+  v3.63    — MARQUEUR TEMPS SUR LA COURBE ΔT (HUD) : point rouge qui parcourt
+             la micro-courbe paléo à mesure que t_ka avance (fond capturé au
+             tracé, restauré à chaque pas, point à (t_ka, anomalie du forage)).
+             Phase 1 (climat figé) : point immobile à t_ka init ; phase 2 :
+             il roule sur la courbe. Coût par pas négligeable (putImageData
+             296×128).
+  v3.62    — FOEHN PHYSIQUE (audit des constantes, points GLAC_FOEHN_VENT/
+             SOUS/DT/GRAZE) : les 4 placeholders remplacés par un calcul
+             (dsm-foehn.js, nouveau module) — précipitation orographique
+             Smith & Barstad (2004, spectral, FFT2 JS pur) pour fC,
+             réchauffement adiabatique réel (Γ_sec−Γ_humide)×Δz_saturé
+             pour fDT (Δz_saturé par recherche de crête amont sur
+             ombreElev1024, plus par seuil d'angle rasant). Vent par
+             époque : 270° (Ouest, actuel) → 202,5° (SSO, LGM), interpolé
+             linéairement — remplace capVent (270°→225°, désormais non
+             appelée, gardée en référence). Voir dsm-foehn-cadrage.md
+             pour les équations, sources et le plan de validation
+             Vosges/Alsace (validation chiffrée encore à faire sur relief
+             réel — cf cadrage §4). glacierCalcFoehn() délègue à
+             DsmFoehn.foehnCalc().
+  v3.61    — PRÉCIPITATION PALÉO (audit constantes, point 4) : precJour ×
+             exp(GLAC_PRECIP_CC·ΔT), Clausius-Clapeyron tempérée (0,045/°C),
+             appliquée au pool ET au mono-thread. LGM → ×0,56. NETTOYAGE DES
+             LOGS MORTS : suppression sondeGPS, sondeZone (LE LOG/FRONT
+             suiveur — limiteurs SER/NYE/φ inexistants depuis flux 4.0) et
+             sonde CIBLE 2290. Restent : [GLACIER], [SONDE], [FLUX], [ELA].
+             dsm-temp 2.4 : A_SAISON 15→9,5 et JOUR_ETE 172→203 (valeurs
+             mesurées, intérim avant EBM).
+  v3.60    — DENSITÉ DE LA GLACE UNIFIÉE (audit des constantes) : 0,917 partout
+             (ρ = 917 kg/m³, valeur standard) — remplace le mélange 0,9 / 910 /
+             917. GLAC_DENS_GLACE, sondes FRONT/zone, dsm-flux 4.0.1 (DENS_G),
+             dsm-glacier.js hérité (910→917, fichier non chargé). Effet : H
+             ~2 % plus fin à w.e. égal, flux ~9 % plus faible (H⁵) — physique,
+             pas un réglage.
+  v3.59    — INTERRUPTEUR DE FONTE (décision test « climat sans fonte ») :
+             GLAC_FONTE = 0 débranche la fonte PDD dans le pool (K.fonte,
+             worker-glacier 1.3) ET dans la copie mono-thread — dépôt,
+             fraction neige/pluie et tassement conservés. Livré à 0 pour le
+             test de transport pur ; remettre à 1 pour la fonte normale.
+             Rappel : l'iso 0 « annuelle » ne gouverne pas la fonte — le PDD
+             tourne sur la température instantanée (saison ±15 °C, diurne
+             jusqu'à +12 °C au soleil).
+  v3.58    — BILAN DE MASSE PAR TRANCHES D'ALTITUDE (diagnostic ELA) : photo de
+             (neige+glace) avant le pas climatique, différence après — le flux
+             n'est pas compté (transport ≠ bilan). Cumul annuel par tranches de
+             100 m : accumulation, fonte, bilan net (m w.e./an) ; ELA du modèle
+             par interpolation du passage à zéro du bilan net, comparée à la
+             cible LGM 1000–1400 m. Table complète chaque année les 10 premières
+             années puis tous les 50 ans ; bilanELA() en console à la demande.
+             Aucune modification de la physique.
+  v3.57    — FIL DE FER 3D (dsm-fil3d 1.0) : bouton « 3D » — le filet, et
+             uniquement lui, en trois dimensions ; rotations X (bascule),
+             Y (roulis), Z (azimut) par curseurs et glisser, molette = zoom,
+             exagération du relief réglable. Nécessite le filet construit
+             (bouton Fil). Aucune modification de la physique.
+  v3.56    — v3.2 du transfert (relecture croisée validée) : dV_max UNIVERSEL
+             d'égalisation des surfaces (séracs plafonnés — fin du ping-pong et
+             de l'emballement), Href en cliquet croissant (fin du trou noir),
+             pente motrice = gradient de SOCLE projeté par arête (normales du
+             filet 1.5, précalcul Csocle) + ΔH/dist (fin de la diffusion
+             transversale). Pas de clamp des négatifs (nég: = invariant santé).
+  v3.55    — LE LOG auto-suiveur : la fenêtre se recentre à chaque log sur
+             l’arête de front la plus basse (dérive ≤ R/2), position GPS
+             courante affichée — le monitoring accompagne la langue.
+  v3.54    — LE LOG : colonne φ(up/dn) — les cellules en remplissage ne sont
+             plus affichées comme des blocages.
+  v3.53    — CELLULES DE FRONT PARTIELLES (PISM) : LE LOG a prouvé le déficit
+             universel (169/169 arêtes < fonte aval) avec vitesse de front
+             saine (~53 m/an) — le schéma étalait la langue sur 10 ha au lieu
+             de la laisser traverser étroite et épaisse. dsm-flux 3.0 : φ,
+             maille transparente/sans export tant que φ<1 ; fonte × φ dans le
+             pool (worker-glacier 1.1) ; φ renvoyé par le worker flux (1.1).
+  v3.52    — LE LOG v2 : arêtes de FRONT (amont H>5 m, aval H<1 m) dans un
+             rayon élargi (~250 tris) — pente du socle ET de surface, dV,
+             limiteur, ΔH aval, triées par dV : la marche qui n’avance pas
+             devient une ligne nommée.
+  v3.51    — LE LOG : dissection automatique de la zone Val-Thorens
+             (45°13′38.1″N 6°36′32.3″E) à chaque log annuel — 25 triangles les
+             plus proches, triés par z : H, neige, vitesse, IN/OUT prospectifs,
+             ΔH net, limiteur dominant, actif. sondeGPS(lat,lon) reste dispo.
+  v3.50    — Sonde GPS : sondeGPS(lat,lon) en console dissèque le triangle visé
+             et toutes ses arêtes (dV calculé, limiteur qui mord, ΔH aval) ;
+             sondeCible(lat,lon) répète à chaque log annuel.
+  v3.49    — Écoulement en WORKER dédié (dsm-worker-flux 1.0) : dsm-flux 2.5
+             injecté tel quel dans un Blob, adjacence résidente, glaceWE en
+             transferable zéro-copie ; fil principal libéré. Physique inchangée.
+  v3.48    — BUG transport : caches inter-runs (_glacAdj de l’ANCIEN filet →
+             indices faux → masse téléportée) réinitialisés dans glacierInit.
+             Logs : nb de triangles en écoulement + erreur de conservation ΔV
+             (doit rester ≈ 0) — le transport devient mesurable.
+  v3.47    — Dé-throttlage : la boucle n’est plus cadencée par rAF (plancher
+             16,7 ms/pas, CPU à vide) — enchaînement direct des pas, l’UI
+             respire via la macrotâche du round-trip worker. Console 100 ans.
+             Log [FLUX] uniquement au clic.
+  v3.46    — POOL DE WORKERS (dsm-worker-glacier 1.0, modèle Blob du worker
+             tiff) : accumulation par triangle partitionnée sur les CPU,
+             physique bit-identique au v3.45 (scalaires du pas calculés sur le
+             fil principal, PDD analytique dans les workers). Écoulement
+             (dsm-flux) reste sur le fil principal. Tables par triangle
+             resynchronisées aux recalculs foehn (5 ka) et insolation (1 ka).
+             Au passage : le dépôt de neige n’est plus sauté en nuit polaire
+             (l’ancien return sautait le pas entier — la neige tombe en hiver).
+             glacierAccumPas mono-thread conservé (non appelé).
+  v3.45    — TEMPS RÉEL (compression 200:1 supprimée — décision) : 20 026 années
+             simulées, 1 pas = 5 j réels. PDD analytique 24 h exact (primitive du
+             sinus tronqué, nuit incluse — correctif pt 7), remplace la boucle
+             15 min (~50×). Insolation recalculée tous les 1 ka (précession,
+             pause boucle). dsm-flux 2.1 : cap PHYSIQUE Nye 1951 (pente d’équilibre
+             τ0=100 kPa) remplace les brides numériques. Affichage tous les 50 ans,
+             console tous les 500 ans.
+  v3.44    — Front rouge : trait 1 px (validé 3 px trop épais).
+  v3.43    — Front rouge intégré à la couche glacier (toujours visible, sans
+             bouton). Bouton Flux : flèches seules + log « vitesse max » en
+             console (diagnostic : glace mince → mm/an → flèches minuscules).
+  v3.42    — Ligne de front : extension max tracée en contour NET rouge 3 px
+             (masque pixel + bord 4-connexe + dilatation 3×3) — plus de zones
+             roses granuleuses aux frontières de triangles.
+  v3.41    — Front glaciaire : seuil d’extension (courante, max, contour rose)
+             porté de 0,01 à 1 m w.e. — le film centimétrique du tassement
+             continu couvrait toute la tuile dès l’an 2 (ext max = bord de
+             carte, contour invisible). Définition d’affichage, physique intacte.
+  v3.40    — Flux visible : calque flèches+extension composé APRÈS le glacier
+             (le wrapper render() le recouvrait) ; seuil d’affichage des
+             flèches 0,01 m/an (SIA : v∝H⁵, glace mince ≈ mm/an — normal).
+  v3.39    — CYCLE COMPLET : phase 2 après le spin-up LGM — t_ka balaye −20 ka
+             → +0.026 (2026) en 100 cycles annuels (0,2 ka/an simulé, forçage
+             accéléré, saisons préservées). Foehn recalculé tous les 5 ka
+             (capVent(t_ka)). Cartes insolation gardées LGM (précession <1 %,
+             mesuré). Logs/statut : t_ka + ext courante/max km² = courbe
+             d’extension vs temps. Flèches rafraîchies chaque cycle si Flux actif.
+  v3.38    — ÉCOULEMENT (dsm-flux 2.0) : SIA loi de Glen n=3 + glissement
+             Weertman optionnel (C_SL=0), Blatter-Pattyn en stub inactif.
+             Transfert conservatif par arête d’adjacence des triangles,
+             limiteur ½-rééquilibrage. Fonte étendue aux triangles chauds
+             ayant reçu de la glace. Bouton Flux : flèches de vitesse (sens
+             de glissade, taille/couleur log bleu→rouge, 1/cellule 16 px) +
+             contour rose de l’extension maximale. Logs : ext courante/max km².
+  v3.37    — Filet réutilisé entre bouton Fil et Glacier (plus de double
+             construction) ; dsm-filet 1.2 : raffinement en tas binaire.
+  v3.36    — Raffinement : métrique max(σ, écart sommital) — un pic noyé dans la
+             moyenne force la subdivision (dsm-filet 1.1). Budget ×10 (mesure :
+             <1 s/pas à 16k tri). Chrono : ms/pas dans les logs, total en fin.
+  v3.35    — FILET (dsm-filet.js v1.0) : accumulation PAR TRIANGLE, plus par pixel.
+             Filet virtuel plaqué (bords rectilignes), coupe moindre divergence
+             sauf crête (suit le partage), triangles chauds (T>0 °C au 1er mars)
+             éliminés, raffinement σ (moyennage cohérent) sous budget calculé à
+             rebours des workers (FILET_BUDGET). Vecteur au centroïde. Réservoirs
+             filetNeige/filetGlace (w.e.) ; affichage et stats par lookup
+             triOfPix, moyennes pondérées surface. Bouton Fil recâblé sur le
+             filet (bords orange + zones chaudes rouge). glacierCalcCosTheta,
+             dsmCalcPixNorm et dsm-mesh conservés mais plus appelés par Glacier.
+  v3.34    — Bouton « Fil » : overlay orange des frontières de patches coagulés
+             (diagnostic maillage) + histogramme tailles en console. Constat :
+             la coagulation ne fusionne que 31 % (COS_SEUIL 2° trop strict) et
+             l'accumulation reste PAR PIXEL — le passage aux facettes pondérées
+             surface×angle (cible ~10³ facettes) est la prochaine étape.
+  v3.33    — Affichage glacier corrigé : couleur neige/glace décidée en w.e.
+             (l'épaisseur biaisait ×10 vers le cyan) ; logs en surface couverte %
+             + moyennes par pixel couvert + max glace (fin des sommes sur 1 M px).
+  v3.32    — Bilan de masse unifié : w.e. interne (neige_we, glace_we) + densités
+             d'affichage seulement. Fonte PDD : degrés-heures (cumul T⁺) au lieu
+             de heures×Tmax (4 mm w.e./°C·j neige, 8 glace). Tassement continu
+             exponentiel τ=10 ans (1:1 w.e.) remplace le seuil tout-ou-rien.
+             Glace se forme dès l'an 1 en versant au vent LGM.
+  v3.31    — Maillage cohérent : scaleXY = ombreResY (vraie résolution m/pixel) au
+             lieu de 10 arbitraire → normales/coplanarité en géométrie réelle, fin
+             de l'exagération verticale qui écrasait la fusion. Maillage construit
+             sur ombreElev1024 dans les deux chemins (manuel + glacier direct).
+  v3.30    — Coagulation des pentes AVANT insolation : window.dsmPixNorm (normale
+             moyenne par patch du maillage, convention worker) câblée dans
+             l'insolation (dsm-insol v3.14) ET cos(θ). Init glacier construit
+             maillage+normales avant les 73 cartes. Repli gradient si pas de mesh.
+  v3.29    — Zigzag = lignes fines du PARTAGE en escalier (priority-flood), pas la
+             neige. Le nearest-neighbor (v3.28) les aliasait au pire. Correctif :
+             relief/neige restent nets (smoothing off), mais le calque partage est
+             composité avec moyennage d'aire (smoothing high) → lignes continues.
+  v3.28    — Zigzag corrigé (Gemini) : pixel-lock à l'affichage — lissage désactivé
+             + coordonnées source entières (Math.round) pour base/eau/partage et
+             overlay glacier ; convention surface (imgW/W) dans le rééchantillonnage.
+             Le déchirement venait du calque PARTAGE en coords fractionnaires.
+  v3.26    — Factorisation insolation : 73 cartes par tranche de 5 j (insolationJour,
+             dsm-insol v3.13), précalculées 1× à l'init (climat figé LGM), normalisées
+             Uint8/max global. La fonte/diurne lit la carte de SA tranche (fin du
+             proxy insolMap>50). Boucle sans recalcul (plus de thrash workers).
+             Init réordonné : foehn + cartes après horizons prêts. tempInstant diurne
+             proportionnel à l'ensoleillement (dsm-temp v2.3).
+  v3.25    — Foehn réécrit : ombre pluviométrique NETTE sur la ligne de partage,
+             lue dans l'horizon (déjà calculé) sous lumière rasante d'équinoxe.
+             capVent(lat,t_ka) (270° présent → 225° SO au LGM tropical). Deux
+             canaux : précip ×1,33 au vent / ×0,33 sous le vent + 5 °C (foehn
+             chaud). Corrige le plantage GLAC_VENT_DIR/GLAC_FOEHN non définis.
+  v3.24    — Convention t_ka unifiée : NÉGATIF = passé (LGM = -20, présent ≈ 0).
+             ctrlTka() = (annee-1950)/1000 ; courbe ΔT et anomaliePaleo alignées
+             (tables paléo retournées en négatif côté dsm-temp.js v2.2).
+  v3.23    — Checklist sortie du panneau horaire vers HUD fixe #dsm-status
+             (toujours visible, ne disparaît plus au stop Ombre). Micro-courbe
+             ΔT paléo (anomaliePaleo à la latitude de la carte, -20 000→2100)
+             tracée sous la checklist, marqueur LGM.
+  v3.22    — Checklist permanente : chkMajLeds() rafraîchie par timer 400ms
+             (découplée de l'affichage horaire). LED Temp → tempMap (et non
+             ombreElev1024) ; LED Ombre → ombreMask (masque calculé, pas horizons).
+  v3.21    — Glacier inline : pile 1..8 sans worker ni appel externe.
+  v3.20    — btn-glacier + scripts dsm-mesh/glacier/init-glacier.
+  v3.19    — render() : DSMMESH.construire après Partage.
+  v3.18    — render() : ouvre le panneau temps au premier chargement de tuile.
+  v3.17    — ctrlRiseSet() : sunrise/sunset calculés localement via orbital()+
+             sunRiseSet() sans dépendre de insolRise/insolSet ; slider heure
+             verrouillé entre sunrise et sunset dans ctrlRendrePanneau,
+             ctrlIncrementer et applyPct.
+  v3.16    — ctrlRendrePanneau : garde insolRise avant accès lever/coucher
+             (placeholder « calcul… » si worker pas encore répondu).
+  v3.15    — Bouton « Partage » : overlay noir des lignes de partage
+             des eaux sur la carte ipso (dsm-partage.js, calcul 1×/terrain).
+  v3.12    — hooks applyPct + ctrlIncrementer : tempRecalcul() au
+             changement d'année quand vue temp active (dsm-temp.js).
+  v3.10    — Redécoupage multi-fichiers depuis la référence v3.7
+             (dsm_original.html) : dsm-astro.js (source unique astronomie,
+             corrige ombreOrbital hardcodé + azimut sunPos) + dsm-worker-tiff.js
+             + dsm-ombre.js + dsm-insol.js (insolation différentielle 20 000 ans).
+  Ordre    : <script> glue inline PUIS dsm-astro.js PUIS dsm-worker-tiff.js
+             PUIS dsm-ombre.js PUIS dsm-insol.js (les listeners eau/insol
+             utilisent les const canvas/btn-insol déclarées dans le glue).
+  v3.7     — Recalcul auto jour/année (debounce 150ms, garde ombreHorizonCopy) ;
              vidéo AVI MJPEG maison 10fps exact (header dwRate, durée 36.5s garantie) ;
              passe 2 vidéo soloLever (1 pas, ×40) ; overlay date/heure/lat/lon ;
              workers passe 1 persistants (grille envoyée 1 fois, file d'azimuts)
@@ -40,12 +262,14 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0d1117;
 .btn:disabled{opacity:.3;cursor:default}
 #btn-rec.recording{border-color:#f38ba8;color:#f38ba8}
 #btn-video.running{border-color:#a6e3a1;color:#a6e3a1}
-/* Toggle robinet/glacier */
-#btn-mode{min-width:110px}
-#btn-mode.glacier{border-color:#89dceb;color:#89dceb}
 /* Bouton ombre terrain */
 #btn-ombre{min-width:100px}
 #btn-ombre.active{border-color:#f9e2af;color:#f9e2af}
+#btn-insol.active{border-color:#fab387;color:#fab387}
+#btn-temp.active{border-color:#a6e3a1;color:#a6e3a1}
+#btn-partage.active{border-color:#f5c2e7;color:#f5c2e7}
+#btn-fil.active{border-color:#fab387;color:#fab387}
+#btn-flux.active{border-color:#f38ba8;color:#f38ba8}
 /* Panneau lever/coucher soleil — DÉSACTIVÉ (remplacé par #ctrl-panel) */
 /* ── Panneau contrôle gauche — Année / Jour / Heure ── */
 #ctrl-panel{
@@ -94,6 +318,15 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0d1117;
 #legend-panel .leg-title{font-size:.58rem;color:#a6adc8;letter-spacing:.05em}
 #lcv{width:60px;flex:1;display:block;border-radius:3px}
 #legend-panel .leg-unit{font-size:.55rem;color:#6c7086}
+#dsm-status{position:fixed;top:50px;right:8px;width:148px;z-index:1500;
+  display:flex;flex-direction:column;gap:6px;padding:8px 8px 6px;
+  background:rgba(20,24,32,.9);border:1px solid #2a2d3d;border-radius:6px}
+#dsm-status .hud-titre{font-size:.52rem;color:#585b70;text-align:center;letter-spacing:.5px}
+#deltaC{width:100%;height:64px;display:block;background:#11151c;border-radius:3px}
+#checklist{display:flex;flex-direction:column;gap:3px;padding:0 4px}
+.chk-row{display:flex;align-items:center;gap:5px;font-size:.55rem;color:#a6adc8}
+.chk-led{width:8px;height:8px;border-radius:50%;background:#313244;border:1px solid #45475a;flex-shrink:0;transition:background .3s}
+.chk-led.on{background:#a6e3a1;border-color:#a6e3a1;box-shadow:0 0 4px #a6e3a1}
 #vbar{position:fixed;bottom:0;left:0;right:0;height:26px;z-index:2000;
   display:flex;align-items:center;padding:0 12px;gap:10px;
   background:rgba(13,17,23,.88);border-top:1px solid #1e2030;font-size:.62rem}
@@ -105,12 +338,32 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0d1117;
 
 <div id="topbar">
   <span id="titre">DSM — En attente d'une tuile</span>
-  <button class="btn" id="btn-mode">🌊 Robinet</button>
   <button class="btn" id="btn-ombre" disabled>🌑 Ombre</button>
+  <button class="btn" id="btn-insol" disabled>☀️ Insol</button>
+  <button class="btn" id="btn-temp"  disabled>🌡 Temp</button>
   <button class="btn" id="swap"      disabled>&#x21C4; Courbes de niveau</button>
+  <button class="btn" id="btn-partage">&#x26F0; Partage</button>
+  <button class="btn" id="btn-fil">&#x1F578; Fil</button>
+  <button class="btn" id="btn-fil3d">&#x1F5FB; 3D</button>
+  <button class="btn" id="btn-flux">&#x27A1; Flux</button>
   <button class="btn" id="btn-carto" disabled>&#x1F5FA; Carto</button>
   <button class="btn" id="btn-rec"   disabled>&#x23FA; REC</button>
   <button class="btn" id="btn-video" disabled>🎬 Vidéo 365j</button>
+  <button class="btn" id="btn-glacier" disabled>❄️ Glacier</button>
+</div>
+
+<!-- HUD permanente : checklist + courbe ΔT paléo -->
+<div id="dsm-status">
+  <div id="checklist">
+    <div class="chk-row"><span class="chk-led" id="led-map"></span>Map</div>
+    <div class="chk-row"><span class="chk-led" id="led-ombre"></span>Ombre</div>
+    <div class="chk-row"><span class="chk-led" id="led-insol"></span>Insol</div>
+    <div class="chk-row"><span class="chk-led" id="led-temp"></span>Temp</div>
+    <div class="chk-row"><span class="chk-led" id="led-partage"></span>Partage</div>
+    <div class="chk-row"><span class="chk-led" id="led-glacier"></span>Glacier</div>
+  </div>
+  <div class="hud-titre" id="deltaC-titre">ΔT °C — lat —</div>
+  <canvas id="deltaC" width="296" height="128"></canvas>
 </div>
 
 <div id="main">
@@ -150,12 +403,12 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0d1117;
       </div>
     </div>
     <!-- Lever / coucher — lecture seule -->
-    <div style="margin-top:4px;font-size:.60rem;color:#585b70;text-align:center;line-height:1.6">
+    <div id="ctrl-info-rise" style="margin-top:4px;font-size:.60rem;color:#585b70;text-align:center;line-height:1.6">
       <span id="ctrl-rise" style="color:#fab387">🌅 --h--</span><br>
       <span id="ctrl-set"  style="color:#89b4fa">🌇 --h--</span>
     </div>
     <!-- Az / él soleil -->
-    <div style="font-size:.60rem;color:#585b70;text-align:center;margin-top:2px">
+    <div id="ctrl-info-sun" style="font-size:.60rem;color:#585b70;text-align:center;margin-top:2px">
       <span id="ctrl-sunpos">az —°  él —°</span>
     </div>
     <!-- Indicateur ombre -->
@@ -163,6 +416,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0d1117;
       <span id="ctrl-ombre-ind">—</span>
     </div>
   </div>
+
   <div id="wrap">
     <canvas id="c" width="1024" height="1024"></canvas>
     <div id="lmap"></div>
@@ -183,383 +437,10 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0d1117;
 
 <script>
 // ════════════════════════════════════════════════════════════════
-// WORKER INLINE — Blob URL (fonctionne sur file:// et http://)
-// Tout le décodage TIFF tourne hors fil principal.
-// Retourne (zero-copy) : elevGrid F32 + hypsoPixels RGBA + contourPixels RGBA
+// GLUE UI — déclaré AVANT dsm-astro.js / dsm-worker-tiff.js /
+// dsm-ombre.js / dsm-insol.js (scope global partagé ; les références
+// croisées sont résolues à l'exécution)
 // ════════════════════════════════════════════════════════════════
-const WORKER_SRC = `
-// ── Tags TIFF ──────────────────────────────────────────────────
-function readTiffTags(buf) {
-  var v=new DataView(buf), le=(v.getUint16(0,true)===0x4949);
-  var r16=function(o){return v.getUint16(o,le);};
-  var r32=function(o){return v.getUint32(o,le);};
-  var ifd=r32(4), t={}, ne=r16(ifd);
-  for(var i=0;i<ne;i++){
-    var base=ifd+2+i*12, tag=r16(base), type=r16(base+2),
-        cnt=r32(base+4), vo=base+8;
-    (function(tag,type,cnt,vo){
-      function vals(){
-        var sz=[0,1,1,2,4,8,1,1,2,4,8,4,8][type]||1;
-        var start=sz*cnt>4?r32(vo):vo, arr=[];
-        for(var j=0;j<cnt;j++){
-          var p=start+j*sz;
-          if(type===3)arr.push(v.getUint16(p,le));
-          else if(type===4)arr.push(v.getUint32(p,le));
-          else if(type===12)arr.push(v.getFloat64(p,le));
-          else if(type===16)arr.push(Number(v.getBigUint64(p,le)));
-          else arr.push(v.getUint32(p,le));
-        }
-        return arr;
-      }
-      switch(tag){
-        case 256:t.width=vals()[0];break;    case 257:t.height=vals()[0];break;
-        case 258:t.bps=vals()[0];break;      case 317:t.predictor=vals()[0];break;
-        case 322:t.tileW=vals()[0];break;    case 323:t.tileH=vals()[0];break;
-        case 324:t.tileOffsets=vals();break; case 325:t.tileByteCounts=vals();break;
-        case 339:t.sampleFormat=vals()[0];break;
-        case 33550:t.pixelScale=vals();break; case 33922:t.tiepoint=vals();break;
-      }
-    })(tag,type,cnt,vo);
-  }
-  return t;
-}
-
-// ── Inflate natif (DecompressionStream — disponible dans Workers) ──
-async function inflateNative(uint8){
-  var raw=uint8.slice(2,uint8.length-4);
-  var ds=new DecompressionStream('deflate-raw');
-  var writer=ds.writable.getWriter(), reader=ds.readable.getReader();
-  writer.write(raw).then(function(){writer.close();});
-  var chunks=[], totalLen=0;
-  while(true){var r=await reader.read(); if(r.done)break; chunks.push(r.value); totalLen+=r.value.length;}
-  var out=new Uint8Array(totalLen), off=0;
-  for(var i=0;i<chunks.length;i++){out.set(chunks[i],off);off+=chunks[i].length;}
-  return out;
-}
-
-// ── Décodage tuile Float32 (Predictor=3, fpAcc) ────────────────
-async function decodeTile(buf,offset,byteCount,tileW,tileH){
-  var raw=await inflateNative(new Uint8Array(buf,offset,byteCount));
-  var rowBytes=tileW*4, out=new Float32Array(tileW*tileH), tmp=new Uint8Array(out.buffer);
-  for(var row=0;row<tileH;row++){
-    var rs=row*rowBytes;
-    for(var i=rs+1;i<rs+rowBytes;i++) raw[i]=(raw[i]+raw[i-1])&0xFF;
-    var base=row*tileW;
-    for(var i=0;i<tileW;i++){
-      tmp[(base+i)*4+0]=raw[rs+3*tileW+i]; tmp[(base+i)*4+1]=raw[rs+2*tileW+i];
-      tmp[(base+i)*4+2]=raw[rs+1*tileW+i]; tmp[(base+i)*4+3]=raw[rs+0*tileW+i];
-    }
-  }
-  return out;
-}
-
-// ── LUT hypsométrique ──────────────────────────────────────────
-function makeHypsoLUT(){
-  var stops=[[0.00,20,90,20],[0.12,80,160,50],[0.25,180,170,80],
-    [0.40,180,130,50],[0.58,140,85,30],[0.74,130,100,80],
-    [0.88,200,190,180],[1.00,255,255,255]];
-  var lut=new Uint8Array(256*3);
-  for(var i=0;i<256;i++){
-    var t=i/255, s0=stops[0], s1=stops[1];
-    for(var k=0;k<stops.length-1;k++)
-      if(t>=stops[k][0]&&t<=stops[k+1][0]){s0=stops[k];s1=stops[k+1];break;}
-    var f=s1[0]===s0[0]?0:(t-s0[0])/(s1[0]-s0[0]);
-    lut[i*3]=Math.round(s0[1]+f*(s1[1]-s0[1]));
-    lut[i*3+1]=Math.round(s0[2]+f*(s1[2]-s0[2]));
-    lut[i*3+2]=Math.round(s0[3]+f*(s1[3]-s0[3]));
-  }
-  return lut;
-}
-
-// ── Grille élévation + pixels RGBA hypsométriques ─────────────
-// Égalisation d'histogramme (10 000 bins) pour maximiser le contraste.
-// Pixels placés dans un tableau W×H global (pas tuile par tuile).
-async function buildElevAndHypso(buf,t,lut){
-  var W=t.width, H=t.height, tileW=t.tileW, tileH=t.tileH;
-  var tileOffsets=t.tileOffsets, tileByteCounts=t.tileByteCounts;
-  var tilesX=Math.ceil(W/tileW), tilesY=Math.ceil(H/tileH);
-  var totalTiles=tilesX*tilesY;
-  var elevGrid=new Float32Array(W*H);
-  var tiles=[], vmin=Infinity, vmax=-Infinity;
-
-  for(var ty=0;ty<tilesY;ty++) for(var tx=0;tx<tilesX;tx++){
-    var idx=ty*tilesX+tx;
-    var tw=Math.min(tileW,W-tx*tileW), th=Math.min(tileH,H-ty*tileH);
-    var data=await decodeTile(buf,tileOffsets[idx],tileByteCounts[idx],tileW,tileH);
-    tiles.push({data:data,tw:tw,th:th,tx:tx,ty:ty});
-    for(var r=0;r<th;r++) for(var c=0;c<tw;c++){
-      var v=data[r*tileW+c];
-      elevGrid[(ty*tileH+r)*W+(tx*tileW+c)]=v;
-      if(v>0.5&&v<9000){if(v<vmin)vmin=v; if(v>vmax)vmax=v;}
-    }
-    self.postMessage({type:'progress',msg:'Décodage tuile '+(idx+1)+'/'+totalTiles+'…'});
-  }
-
-  var NBINS=10000, hist=new Uint32Array(NBINS), vrange=vmax-vmin||1;
-  for(var i=0;i<tiles.length;i++){
-    var tile=tiles[i];
-    for(var r=0;r<tile.th;r++) for(var c=0;c<tile.tw;c++){
-      var v=tile.data[r*tileW+c];
-      if(v>0.5&&v<9000) hist[Math.min(NBINS-1,Math.floor((v-vmin)/vrange*NBINS))]++;
-    }
-  }
-  var tot=0; for(var b=0;b<NBINS;b++) tot+=hist[b];
-  var binToLut=new Uint8Array(NBINS), cumul=0;
-  for(var b=0;b<NBINS;b++){cumul+=hist[b]; binToLut[b]=Math.min(255,Math.floor(cumul/tot*256));}
-
-  var hypsoPixels=new Uint8ClampedArray(W*H*4);
-  for(var i=0;i<tiles.length;i++){
-    var tile=tiles[i];
-    for(var r=0;r<tile.th;r++) for(var c=0;c<tile.tw;c++){
-      var v=tile.data[r*tileW+c];
-      var o=((tile.ty*tileH+r)*W+(tile.tx*tileW+c))*4;
-      if(v<=0.5||v>=9000){hypsoPixels[o]=20;hypsoPixels[o+1]=60;hypsoPixels[o+2]=130;hypsoPixels[o+3]=255;}
-      else{var li=binToLut[Math.min(NBINS-1,Math.floor((v-vmin)/vrange*NBINS))]*3;
-        hypsoPixels[o]=lut[li];hypsoPixels[o+1]=lut[li+1];hypsoPixels[o+2]=lut[li+2];hypsoPixels[o+3]=255;}
-    }
-  }
-  return {elevGrid:elevGrid, vmin:vmin, vmax:vmax, hypsoPixels:hypsoPixels};
-}
-
-// ── Marching Squares — bitmap contours (OffscreenCanvas dans le Worker) ──
-//
-// Table LINES[idx] = paires d'arêtes à connecter (0=haut 1=droite 2=bas 3=gauche).
-// idx construit bit par bit : bit0=TL bit1=TR bit2=BR bit3=BL (1 si > seuil).
-// edgePt : interpolation linéaire sub-pixel sur l'arête.
-//
-// Stratégie performance :
-//   Une seule passe cellulaire par style (minor / major).
-//   Pour chaque cellule, on cherche les niveaux dans [cellMin,cellMax] par pas
-//   → on ne teste jamais les niveaux qui ne coupent pas la cellule.
-//   Résultat : deux ctx.stroke() au total, quelque soit le nombre de niveaux.
-function buildContourBitmap(elevGrid,W,H,vmin,vmax){
-  var interval=vmax>800?100:vmax>300?50:20, major=interval*5;
-
-  // Table Marching Squares — 16 cas, chacun 0, 1 ou 2 segments
-  var LINES=[
-    [],[[0,3]],[[0,1]],[[1,3]],
-    [[1,2]],[[0,3],[1,2]],[[0,2]],[[2,3]],
-    [[2,3]],[[0,2]],[[0,1],[2,3]],[[1,2]],
-    [[1,3]],[[0,1]],[[0,3]],[]
-  ];
-
-  // Coordonnée du point de croisement sur l'arête e (espace pixel = espace grille)
-  function ep(e,c,r,TL,TR,BR,BL,t){
-    var d,f;
-    if(e===0){d=TR-TL; f=d?(t-TL)/d:.5; return[c+f,r];}
-    if(e===1){d=BR-TR; f=d?(t-TR)/d:.5; return[c+1,r+f];}
-    if(e===2){d=BR-BL; f=d?(t-BL)/d:.5; return[c+f,r+1];}
-    d=BL-TL; f=d?(t-TL)/d:.5; return[c,r+f];
-  }
-
-  var osc=new OffscreenCanvas(W,H), ctx=osc.getContext('2d');
-
-  // 1. Fond : blanc (terre) / bleu (mer)
-  var bg=new Uint8ClampedArray(W*H*4);
-  for(var i=0;i<W*H;i++){
-    var v=elevGrid[i], o=i*4;
-    if(v<=0.5||v>=9000){bg[o]=20;bg[o+1]=60;bg[o+2]=130;}
-    else{bg[o]=255;bg[o+1]=255;bg[o+2]=255;}
-    bg[o+3]=255;
-  }
-  ctx.putImageData(new ImageData(bg,W,H),0,0);
-  bg=null;
-
-  // 2. Isolignes Marching Squares — une passe par style
-  function drawPass(stepLv, skipMod, color, lw){
-    ctx.strokeStyle=color; ctx.lineWidth=lw;
-    ctx.beginPath();
-    for(var r=0;r<H-1;r++) for(var c=0;c<W-1;c++){
-      var TL=elevGrid[r*W+c], TR=elevGrid[r*W+c+1];
-      var BR=elevGrid[(r+1)*W+c+1], BL=elevGrid[(r+1)*W+c];
-      if(TL<=0.5||TR<=0.5||BR<=0.5||BL<=0.5) continue;
-      var cMin=TL,cMax=TL;
-      if(TR<cMin)cMin=TR; if(TR>cMax)cMax=TR;
-      if(BR<cMin)cMin=BR; if(BR>cMax)cMax=BR;
-      if(BL<cMin)cMin=BL; if(BL>cMax)cMax=BL;
-      // Premier niveau >= cMin aligné sur stepLv
-      var first=Math.ceil(cMin/stepLv)*stepLv;
-      for(var lv=first;lv<=cMax;lv+=stepLv){
-        if(skipMod&&(lv%skipMod===0)) continue;
-        var idx=(TL>lv?1:0)|(TR>lv?2:0)|(BR>lv?4:0)|(BL>lv?8:0);
-        var segs=LINES[idx];
-        for(var s=0;s<segs.length;s++){
-          var p0=ep(segs[s][0],c,r,TL,TR,BR,BL,lv);
-          var p1=ep(segs[s][1],c,r,TL,TR,BR,BL,lv);
-          ctx.moveTo(p0[0],p0[1]); ctx.lineTo(p1[0],p1[1]);
-        }
-      }
-    }
-    ctx.stroke();
-  }
-
-  drawPass(interval, major,  'rgba(110,78,28,.55)', 0.7);  // mineures
-  drawPass(major,    0,      'rgba(62,36,8,.90)',   1.6);   // majeures
-
-  return {bitmap:osc.transferToImageBitmap(), interval:interval, major:major};
-}
-
-// ── Point d'entrée Worker ──────────────────────────────────────
-self.onmessage=async function(e){
-  if(e.data.type!=='load') return;
-  try{
-    var buf=e.data.buffer;
-    self.postMessage({type:'progress',msg:'Lecture tags TIFF\u2026'});
-    var t=readTiffTags(buf);
-    var geo=(t.tiepoint&&t.pixelScale)?{
-      lonMin:t.tiepoint[3], latMax:t.tiepoint[4],
-      lonMax:t.tiepoint[3]+t.width*t.pixelScale[0],
-      latMin:t.tiepoint[4]-t.height*t.pixelScale[1]
-    }:null;
-    var lut=makeHypsoLUT();
-    var res=await buildElevAndHypso(buf,t,lut);
-    self.postMessage({type:'progress',msg:'Marching Squares\u2026'});
-    var cRes=buildContourBitmap(res.elevGrid,t.width,t.height,res.vmin,res.vmax);
-    self.postMessage({
-      type:'done',
-      width:t.width, height:t.height,
-      vmin:res.vmin, vmax:res.vmax, geo:geo,
-      interval:cRes.interval, major:cRes.major,
-      elevGrid:res.elevGrid, hypsoPixels:res.hypsoPixels,
-      contourBitmap:cRes.bitmap
-    },[res.elevGrid.buffer, res.hypsoPixels.buffer, cRes.bitmap]);
-  }catch(err){
-    self.postMessage({type:'error', msg:err.message});
-  }
-};
-`;
-
-// ════════════════════════════════════════════════════════════════
-// INSOL_WORKER — Phase 0 : lever/coucher soleil 365j
-// Source   : Laskar et al. 2004, A&A 428 (IMCCE/BDL) + insolsub_f.f (ASD/IMCCE 1993-2010)
-// Table    : INSOLN.LA2004.BTL.ASC — t(ka), e, eps(rad), pibarh(rad), 0 à -250ka
-// Entrée   : { type:'sunpath', lat_rad, lon_deg, t_ka }
-// Sortie   : { type:'done', rise[365], set[365] } heures UTC décimales, -1=nuit polaire
-// ════════════════════════════════════════════════════════════════
-const INSOL_WORKER_SRC = `
-"use strict";
-// ══════════════════════════════════════════════════════════════════════════
-// INSOL_WORKER — Phase 0 : lever/coucher soleil 365j
-// Source physique : Laskar et al. 2004, A&A 428, 261 (IMCCE/BDL)
-//                  + insolsub_f.f (ASD/IMCCE 1993-2010, Laskar/Joutel/Gastineau)
-// Table    : INSOLN.LA2004.BTL.ASC — t(ka), e, eps(rad), pibarh(rad)
-//            0 à -250ka, pas 1ka, source IMCCE
-// Entrée   : { type:'sunpath', lat_rad, lon_deg, t_ka }
-// Sortie   : { type:'done', rise[365], set[365] }  (heures UTC décimales)
-//            rise[j] = heure lever jour j (0=1er jan), -1 = nuit polaire
-// ══════════════════════════════════════════════════════════════════════════
-
-// ── Table La2004 embarquée : [e, eps_rad, pibarh_rad] index=|t_ka| ────────
-// Source : INSOLN.LA2004.BTL.ASC, IMCCE, Laskar et al. 2004
-var LA2004=[[0.0167023623,0.4090928042,1.7962569911],[0.0171613871,0.4113529839,1.4979284795],[0.0174968247,0.4135547682,1.2000239313],[0.0178457508,0.4156391588,0.9034936200],[0.0182109103,0.4175547806,0.6113806653],[0.0184534955,0.4192474312,0.3155370046],[0.0187483843,0.4206669282,0.0245741287],[0.0189373753,0.4217769374,6.0186408618],[0.0191800725,0.4225363587,5.7272447269],[0.0193254808,0.4229181438,5.4383554614],[0.0194246087,0.4229058544,5.1533728223],[0.0195973748,0.4224860257,4.8634579100],[0.0196127588,0.4216578538,4.5794320188],[0.0196505558,0.4204362478,4.2923465020],[0.0196790596,0.4188346346,4.0084461313],[0.0196348742,0.4168867798,3.7227544324],[0.0195601778,0.4146342725,3.4367298690],[0.0194869599,0.4121230573,3.1539568918],[0.0193470765,0.4094133839,2.8676431023],[0.0192230810,0.4065767814,2.5814007089],[0.0190026723,0.4036773689,2.2983901715],[0.0188354289,0.4007997666,2.0112184257],[0.0186173998,0.3980267045,1.7259065874],[0.0183405965,0.3954325755,1.4405277025],[0.0180945533,0.3931007988,1.1553322249],[0.0178681374,0.3911082297,0.8712674517],[0.0175067836,0.3895102552,0.5847445164],[0.0172789659,0.3883679018,0.3056833811],[0.0169668481,0.3877212880,0.0227315006],[0.0166518441,0.3875889848,6.0259038616],[0.0163655189,0.3879848847,5.7511635854],[0.0160454696,0.3888984644,5.4774440960],[0.0157784648,0.3902973233,5.2033945747],[0.0154495435,0.3921477026,4.9395848634],[0.0151749885,0.3943908371,4.6738109861],[0.0149423199,0.3969553134,4.4137642494],[0.0146516928,0.3997755798,4.1573622545],[0.0144240673,0.4027683736,3.9047220341],[0.0142706432,0.4058490459,3.6577913949],[0.0140393602,0.4089427485,3.4099356623],[0.0139293129,0.4119702006,3.1701944316],[0.0138240717,0.4148529155,2.9329758914],[0.0137351986,0.4175316950,2.6939206508],[0.0137194025,0.4199397997,2.4616928061],[0.0137057180,0.4220254679,2.2321530063],[0.0137927071,0.4237490773,1.9956834101],[0.0138426801,0.4250728525,1.7686701994],[0.0139867686,0.4259720074,1.5372219134],[0.0141817740,0.4264396010,1.3040624132],[0.0143854297,0.4264647848,1.0735629206],[0.0146001518,0.4260582942,0.8368973314],[0.0149581146,0.4252384870,0.6046924209],[0.0152168289,0.4240276525,0.3639000448],[0.0155712797,0.4224608374,0.1243217519],[0.0159614181,0.4205800421,6.1672861113],[0.0163303538,0.4184268617,5.9195044958],[0.0167393933,0.4160557679,5.6711405574],[0.0171560119,0.4135203661,5.4243111443],[0.0176054846,0.4108731965,5.1663056250],[0.0180437978,0.4081776018,4.9124335344],[0.0184691656,0.4054908453,4.6539298844],[0.0189825042,0.4028675670,4.3917767360],[0.0194166702,0.4003677517,4.1284454248],[0.0198634117,0.3980440045,3.8628763865],[0.0203886122,0.3959409968,3.5942027813],[0.0208222635,0.3941061057,3.3253781731],[0.0213111478,0.3925749160,3.0512157237],[0.0217931635,0.3913737464,2.7806123434],[0.0222937951,0.3905257780,2.5045424784],[0.0227768416,0.3900457953,2.2281198229],[0.0232795608,0.3899320916,1.9537040997],[0.0237901897,0.3901857413,1.6757026274],[0.0243450916,0.3907919047,1.3978831742],[0.0248079265,0.3917298708,1.1218799243],[0.0254080530,0.3929737448,0.8443111998],[0.0259517140,0.3944940099,0.5666728361],[0.0264700435,0.3962511023,0.2909675855],[0.0270783496,0.3982107988,0.0142596588],[0.0276460343,0.4003309024,6.0227577801],[0.0282094983,0.4025681970,5.7460057185],[0.0288046811,0.4048819785,5.4730261961],[0.0294040914,0.4072293018,5.1991774742],[0.0299866777,0.4095626732,4.9238160442],[0.0305810663,0.4118425437,4.6528670954],[0.0311582411,0.4140258964,4.3793349423],[0.0317999464,0.4160683912,4.1064015489],[0.0323467026,0.4179338091,3.8343947796],[0.0329378863,0.4195858871,3.5624406210],[0.0335975166,0.4209890360,3.2898341302],[0.0341063101,0.4221159825,3.0175786044],[0.0347434426,0.4229441055,2.7449557391],[0.0353196326,0.4234471396,2.4733096099],[0.0358754424,0.4236156505,2.1985185342],[0.0364478097,0.4234371995,1.9259036163],[0.0369975498,0.4229070367,1.6519859025],[0.0375394624,0.4220293696,1.3752015583],[0.0380871283,0.4208144553,1.1003670743],[0.0385531082,0.4192746370,0.8225843350],[0.0391425104,0.4174415963,0.5445055204],[0.0395846415,0.4153457719,0.2647105113],[0.0400600025,0.4130265592,6.2669563057],[0.0405626132,0.4105364980,5.9856877923],[0.0409647926,0.4079304775,5.7013637275],[0.0413776014,0.4052669628,5.4158808023],[0.0417688308,0.4026165598,5.1310181606],[0.0421227056,0.4000449849,4.8407969207],[0.0424519848,0.3976224499,4.5519139050],[0.0427226409,0.3954196527,4.2610266145],[0.0430308517,0.3934998697,3.9681545396],[0.0432494166,0.3919231186,3.6744283249],[0.0434157798,0.3907447966,3.3804929598],[0.0436470320,0.3900019541,3.0850347073],[0.0437289354,0.3897229294,2.7899633343],[0.0438390945,0.3899282027,2.4937859547],[0.0438843265,0.3906094719,2.1991916097],[0.0439208287,0.3917524513,1.9044550281],[0.0438771416,0.3933299977,1.6092059889],[0.0438130342,0.3952905326,1.3178991782],[0.0437217106,0.3975782345,1.0253810655],[0.0435784778,0.4001296348,0.7349870153],[0.0433711308,0.4028609421,0.4470757182],[0.0431490274,0.4056976680,0.1599559597],[0.0429189674,0.4085577329,6.1581575701],[0.0425465148,0.4113549081,5.8746830139],[0.0422427279,0.4140140289,5.5934770554],[0.0418623065,0.4164637279,5.3139391452],[0.0414098835,0.4186312469,5.0349543225],[0.0409857901,0.4204674751,4.7586844266],[0.0404894241,0.4219218373,4.4844205108],[0.0399994353,0.4229557306,4.2086302017],[0.0394456208,0.4235479016,3.9376641136],[0.0388824268,0.4236834265,3.6655588906],[0.0383481471,0.4233564911,3.3947532840],[0.0377168132,0.4225834212,3.1251797119],[0.0370818119,0.4213837377,2.8561211505],[0.0365569813,0.4197897167,2.5880721271],[0.0358263593,0.4178522610,2.3191543903],[0.0352474129,0.4156220151,2.0521408881],[0.0346175122,0.4131624343,1.7854624241],[0.0339708704,0.4105488387,1.5174858541],[0.0333690763,0.4078501823,1.2514469884],[0.0327354977,0.4051442732,0.9862052370],[0.0321592072,0.4025138022,0.7189256845],[0.0315819195,0.4000259754,0.4547367118],[0.0309759580,0.3977560696,0.1896310593],[0.0305241661,0.3957706836,6.2084647611],[0.0299743618,0.3941221077,5.9447080825],[0.0295163414,0.3928592771,5.6819374148],[0.0291433441,0.3920198466,5.4203407817],[0.0287574804,0.3916189193,5.1597529094],[0.0284393292,0.3916701850,4.8984698259],[0.0281962356,0.3921630108,4.6433541242],[0.0280041288,0.3930727381,4.3835708421],[0.0278465659,0.3943664925,4.1287360324],[0.0277788931,0.3959969746,3.8755448087],[0.0277608910,0.3979014206,3.6207056413],[0.0278303865,0.4000225379,3.3691020992],[0.0278894165,0.4022902317,3.1181910944],[0.0281089048,0.4046364406,2.8672423514],[0.0283255491,0.4069965020,2.6172622898],[0.0285696889,0.4093093972,2.3672463369],[0.0289341716,0.4115167951,2.1181033516],[0.0292960600,0.4135734743,1.8682450853],[0.0296772807,0.4154328503,1.6165516656],[0.0301361570,0.4170613329,1.3677070217],[0.0306074838,0.4184342391,1.1148641333],[0.0310756717,0.4195262409,0.8613774640],[0.0316027096,0.4203246332,0.6091102413],[0.0321049688,0.4208218946,0.3531094266],[0.0326849343,0.4210123482,0.0963134097],[0.0331735780,0.4208984603,6.1220999008],[0.0337606367,0.4204897182,5.8628295220],[0.0343287012,0.4197936653,5.6010778172],[0.0348408044,0.4188304298,5.3393861026],[0.0354318092,0.4176208522,5.0741047512],[0.0359867542,0.4161906111,4.8098660220],[0.0365263334,0.4145689786,4.5405082459],[0.0370788739,0.4127924074,4.2724740830],[0.0376354347,0.4108919367,4.0025792120],[0.0381742705,0.4089081909,3.7286136124],[0.0387021631,0.4068770078,3.4562465987],[0.0392173374,0.4048356225,3.1815725956],[0.0397952390,0.4028206410,2.9036319963],[0.0402464129,0.4008712997,2.6273468398],[0.0407788722,0.3990206803,2.3475645840],[0.0413159437,0.3973069833,2.0681896835],[0.0417649985,0.3957644743,1.7866987477],[0.0422438751,0.3944254605,1.5047003053],[0.0427587716,0.3933215992,1.2232004836],[0.0431481863,0.3924842520,0.9382797915],[0.0436323985,0.3919347867,0.6550384260],[0.0440073533,0.3916963353,0.3708329904],[0.0444461163,0.3917841774,0.0851062525],[0.0448202005,0.3922052212,6.0832271184],[0.0451591560,0.3929627939,5.7981422325],[0.0455855099,0.3940527678,5.5121311368],[0.0458929411,0.3954598445,5.2272449846],[0.0462137317,0.3971629530,4.9417341342],[0.0465919767,0.3991358589,4.6582328353],[0.0468767251,0.4013364708,4.3734515704],[0.0471698075,0.4037251011,4.0903936233],[0.0474933404,0.4062518768,3.8089147895],[0.0477500836,0.4088604947,3.5265445239],[0.0480421704,0.4114929459,3.2464034545],[0.0482621407,0.4140937167,2.9669058932],[0.0485282753,0.4165949923,2.6882459706],[0.0487760451,0.4189402603,2.4098847247],[0.0489199802,0.4210739357,2.1333169239],[0.0491811112,0.4229371573,1.8567906099],[0.0493331617,0.4244818457,1.5809040890],[0.0494747055,0.4256682376,1.3052621173],[0.0496172547,0.4264527637,1.0303953115],[0.0497543884,0.4268132067,0.7556469542],[0.0498076956,0.4267298437,0.4791509346],[0.0498877049,0.4261891250,0.2051697348],[0.0499272296,0.4251966946,6.2116138269],[0.0499520151,0.4237624151,5.9344862337],[0.0499195665,0.4219037098,5.6575824840],[0.0498886172,0.4196592659,5.3786165118],[0.0498639164,0.4170709769,5.0984967505],[0.0497210648,0.4141863333,4.8178133587],[0.0496216021,0.4110776350,4.5343131063],[0.0494881516,0.4078126851,4.2511818208],[0.0492749302,0.4044692579,3.9638188953],[0.0490673492,0.4011415779,3.6768183423],[0.0488190958,0.3979177915,3.3879077066],[0.0485251953,0.3948867509,3.0956036330],[0.0482131449,0.3921477096,2.8039739178],[0.0477952741,0.3897791749,2.5102664630],[0.0474755896,0.3878543088,2.2144494567],[0.0469539830,0.3864420861,1.9191906452],[0.0464806142,0.3855830267,1.6224681551],[0.0459955747,0.3853019386,1.3260765691],[0.0453851925,0.3856167109,1.0291228352],[0.0447901036,0.3865049710,0.7326768486],[0.0441832387,0.3879403307,0.4388460830],[0.0434840376,0.3898797981,0.1430672607],[0.0428079911,0.3922531263,6.1346736727],[0.0420486719,0.3949869019,5.8443264852],[0.0413136662,0.3980022809,5.5552400474],[0.0405339490,0.4011997953,5.2688363424],[0.0396535793,0.4044927293,4.9852425134],[0.0388937071,0.4077905917,4.7036158209],[0.0379821986,0.4110002965,4.4238832601],[0.0370854334,0.4140457632,4.1475712378],[0.0362296778,0.4168546964,3.8733546146],[0.0352765045,0.4193585046,3.6014225112],[0.0343575325,0.4215115477,3.3310394823],[0.0334115915,0.4232725168,3.0653441153],[0.0324735472,0.4246063870,2.7993878951],[0.0315164930,0.4255010991,2.5360599210]];
-
-// ── Interpolation linéaire dans la table ─────────────────────────────────
-// t_ka : 0 à -250 (valeurs négatives ou nulles)
-function orbital(t_ka) {
-  var tk = Math.min(0, t_ka);
-  var i0 = Math.min(Math.floor(-tk), 249);
-  var i1 = i0 + 1;
-  var f  = (-tk) - i0;
-  var r0 = LA2004[i0], r1 = LA2004[i1];
-  return {
-    e:   r0[0] + f*(r1[0]-r0[0]),
-    eps: r0[1] + f*(r1[1]-r0[1]),
-    pib: r0[2] + f*(r1[2]-r0[2])
-  };
-}
-
-// ── vraimoy : longitude vraie → longitude moyenne, ordre 5 en e ──────────
-// Source : insolsub_f.f, subroutine vraimoy (ASD/BDL, Laskar 1993-2010)
-function vraimoy(hl, e, pibar) {
-  var eV = hl - pibar;
-  return hl
-    - 2*e                           * Math.sin(eV)
-    + (3*e*e/4 + e*e*e*e/8)         * Math.sin(2*eV)
-    - (e*e*e/3 + e*e*e*e*e/8)       * Math.sin(3*eV)
-    + 5*e*e*e*e/32                  * Math.sin(4*eV)
-    - 3*e*e*e*e*e/40                * Math.sin(5*eV);
-}
-
-// ── moyvrai : longitude moyenne → longitude vraie, ordre 5 en e ──────────
-// Source : insolsub_f.f, subroutine moyvrai (ASD/BDL, Laskar 1993-2010)
-function moyvrai(hlm, e, pibar) {
-  var eM = hlm - pibar;
-  return hlm
-    + (2*e - e*e*e/4 + 5*e*e*e*e*e/96) * Math.sin(eM)
-    + (5*e*e/4 - 11*e*e*e*e/24)         * Math.sin(2*eM)
-    + (13*e*e*e/12 - 43*e*e*e*e*e/64)   * Math.sin(3*eM)
-    + 103*e*e*e*e/96                     * Math.sin(4*eM)
-    + 1097*e*e*e*e*e/960                 * Math.sin(5*eM);
-}
-
-// ── sunRiseSet : lever/coucher pour 1 jour ────────────────────────────────
-// Source : insolsub_f.f, subroutine cwj + formule angle horaire (ASD/IMCCE)
-// j      : jour julien 1..365 (1=1er jan)
-// t_ka   : temps en ka (0=aujourd'hui, négatif=passé)
-// lat    : latitude en radians
-// lon    : longitude en degrés EST
-// Retour : { rise, set } en heures UTC décimales, ou { rise:-1, set:-1 }
-function sunRiseSet(j, t_ka, lat, lon) {
-  var orb    = orbital(t_ka);
-  var e      = orb.e;
-  var eps    = orb.eps;
-  var pibarh = orb.pib;
-  // pibar géocentrique (convention insolsub_f.f ligne : pibar=pibarh+pi)
-  var pibar  = pibarh + Math.PI;
-
-  // Longitude vraie du soleil au jour j
-  // Equinoxe vernal = j≈80 (21 mars), longitude vraie = 0
-  // Longitude moyenne à l'équinoxe vernal :
-  var hlm_eq = vraimoy(0, e, pibar);
-  // Longitude moyenne au jour j (mouvement angulaire uniforme)
-  var hlm    = hlm_eq + (j - 80) * 2 * Math.PI / 365.25;
-  // Longitude vraie au jour j
-  var wd     = moyvrai(hlm, e, pibar);
-
-  // Déclinaison (cwj insolsub_f.f : sinusdelta = sin(eps)*sin(wd))
-  var sinD = Math.sin(eps) * Math.sin(wd);
-  var decl = Math.asin(Math.max(-1, Math.min(1, sinD)));
-
-  // Test nuit/jour polaire
-  var cosH = -Math.tan(lat) * Math.tan(decl);
-  if (cosH >  1) return { rise: -1, set: -1 };  // nuit polaire
-  if (cosH < -1) return { rise:  0, set: 24 };   // jour polaire
-
-  var ho      = Math.acos(cosH);          // angle horaire lever (rad)
-  var halfDay = ho * 12.0 / Math.PI;      // demi-durée du jour (heures)
-
-  // Équation du temps → midi solaire vrai en UTC
-  // Anomalie moyenne approx (par rapport au périhélie)
-  var M    = hlm - pibar;
-  // Correction ellipse (1er terme) + obliquité (2e terme) — Meeus ch.27 simplifié
-  var eqt  = (-2*e * Math.sin(M)
-              - Math.pow(Math.tan(eps/2), 2) * Math.sin(2*wd)
-             ) * (180/Math.PI) * 4;       // minutes
-  var noon = 12.0 - eqt/60.0 - lon/15.0; // midi solaire en UTC
-
-  return {
-    rise: noon - halfDay,
-    set:  noon + halfDay
-  };
-}
-
-// ── Point d'entrée worker ─────────────────────────────────────────────────
-self.onmessage = function(e) {
-  if (e.data.type !== 'sunpath') return;
-  var lat   = e.data.lat_rad;
-  var lon   = e.data.lon_deg;
-  var t_ka  = e.data.t_ka !== undefined ? e.data.t_ka : 0;
-  var rise  = new Float32Array(365);
-  var set   = new Float32Array(365);
-  for (var j = 1; j <= 365; j++) {
-    var rs   = sunRiseSet(j, t_ka, lat, lon);
-    rise[j-1] = rs.rise;
-    set[j-1]  = rs.set;
-  }
-  self.postMessage({ type:'done', rise:rise, set:set }, [rise.buffer, set.buffer]);
-};
-`;
-
 // ════════════════════════════════════════════════════════════════
 // PANNEAU CONTRÔLE GAUCHE — Année / Jour / Heure
 // Clavier : ↑↓ sélectionne le slider actif, ←→ incrémente/décrémente
@@ -574,6 +455,17 @@ let ctrlJour   = 354;      // 0-based (354 = 21 déc)
 let ctrlHeure  = 12.0;     // heures UTC décimales
 let ctrlActif  = 1;        // slider actif : 0=année 1=jour 2=heure
 
+// ── ctrlRiseSet — sunrise/sunset pour ctrlJour + ctrlAnnee ─────────
+// Retourne { rise, set } UTC décimales, ou null si GEO absent.
+function ctrlRiseSet() {
+  if (!GEO) return null;
+  var orb   = orbital(ctrlTka());
+  var pibar = orb.pib + Math.PI;
+  var lat   = (GEO.latMax + GEO.latMin) / 2;
+  var lon   = (GEO.lonMax + GEO.lonMin) / 2;
+  return sunRiseSet(ctrlJour + 1, orb.e, orb.eps, pibar, lat * Math.PI / 180, lon);
+}
+
 // ── ctrlRendrePanneau — met à jour tous les affichages du panneau ─
 function ctrlRendrePanneau() {
   // Année
@@ -586,37 +478,34 @@ function ctrlRendrePanneau() {
   document.getElementById('ctrl-val-1').textContent = jourVersDate(ctrlJour);
   document.getElementById('ctrl-fill-1').style.width = (ctrlJour / 364 * 100).toFixed(1) + '%';
 
-  // Heure
+  // Lever / coucher — calculé localement depuis orbital + sunRiseSet
+  var rh   = ctrlRiseSet();
+  var rise = (rh && rh.rise >= 0) ? rh.rise : 0;
+  var setH = (rh && rh.set  >= 0) ? rh.set  : 24;
+  document.getElementById('ctrl-rise').textContent =
+    rh ? '\ud83c\udf05 ' + hDecToHHMM(rise) : '\ud83c\udf05 --h--';
+  document.getElementById('ctrl-set').textContent  =
+    rh ? '\ud83c\udf07 ' + hDecToHHMM(setH) : '\ud83c\udf07 --h--';
+
+  // Heure — clampée entre sunrise et sunset
+  ctrlHeure = Math.max(rise, Math.min(setH, ctrlHeure));
+  insolHour = ctrlHeure;
   document.getElementById('ctrl-val-2').textContent = hDecToHHMM(ctrlHeure);
-  var rise = insolRise ? insolRise[ctrlJour] : 0;
-  var setH = insolSet  ? insolSet[ctrlJour]  : 24;
-  if (rise < 0) rise = 0;
   var span = Math.max(0.01, setH - rise);
-  var fH = Math.max(0, Math.min(1, (ctrlHeure - rise) / span));
+  var fH   = Math.max(0, Math.min(1, (ctrlHeure - rise) / span));
   document.getElementById('ctrl-fill-2').style.width = (fH * 100).toFixed(1) + '%';
 
-  // Lever / coucher
-  if (insolRise) {
-    document.getElementById('ctrl-rise').textContent =
-      '🌅 ' + hDecToHHMM(insolRise[ctrlJour]);
-    document.getElementById('ctrl-set').textContent  =
-      '🌇 ' + hDecToHHMM(insolSet[ctrlJour]);
-  }
-
   // Az / él soleil
-  if (GEO && insolRise) {
-    var orb   = ombreOrbital(ctrlTka());
+  if (GEO) {
+    var orb   = orbital(ctrlTka());
     var pibar = orb.pib + Math.PI;
     var lat   = (GEO.latMax + GEO.latMin) / 2;
     var lon   = (GEO.lonMax + GEO.lonMin) / 2;
-    var pos   = ombreSunPos(ctrlJour + 1, ctrlHeure, orb.e, orb.eps, pibar,
+    var pos   = sunPos(ctrlJour + 1, ctrlHeure, orb.e, orb.eps, pibar,
                             lat * Math.PI / 180, lon);
     document.getElementById('ctrl-sunpos').textContent =
       'az ' + pos.az.toFixed(0) + '°  él ' + pos.el.toFixed(1) + '°';
-    // Déclencher rendu ombre si passe 3 active
-    if (ombreRunning && ombreMask) {
-      ctrlMajPas(pos);
-    }
+    if (ombreMask) ctrlMajPas(pos);
   }
 
   // Highlight label actif
@@ -624,11 +513,23 @@ function ctrlRendrePanneau() {
     var lbl = document.getElementById('ctrl-lbl-' + i);
     lbl.classList.toggle('actif', i === ctrlActif);
   }
-}
+} 
+
+
+
+
+
+
+
+
+
+
+
+
 
 // ── ctrlTka — année → t_ka (kiloyears before 1950) ───────────────
 function ctrlTka() {
-  return (1950 - ctrlAnnee) / 1000;
+  return (ctrlAnnee - 1950) / 1000;   // négatif = passé (LGM ≈ -20), positif = présent/futur
 }
 
 // ── ctrlMajPas — choisit le pas ombreStep le plus proche de ctrlHeure
@@ -662,38 +563,35 @@ function ctrlIncrementer(idx, sens) {   // sens = +1 ou -1
     // Année
     ctrlAnnee = Math.max(CTRL_ANNEE_MIN, Math.min(CTRL_ANNEE_MAX, ctrlAnnee + sens));
     // Recalculer lever/coucher pour la nouvelle époque
-    if (GEO && modeGlacier) lancerInsolation();
     // Recalcul passe 2 si horizon déjà calculé
     declencherPasse2();
+    // Recalcul carte insolation si la vue insol est active (dsm-insol.js)
+    if (typeof insolActive !== 'undefined' && insolActive) insolRecalcul();
+    // Recalcul carte température si la vue temp est active (dsm-temp.js)
+    if (typeof tempActive !== 'undefined' && tempActive) tempRecalcul();
   } else if (idx === 1) {
     // Jour
     ctrlJour = Math.max(0, Math.min(364, ctrlJour + sens));
     insolDay = ctrlJour;
     // Clamper heure dans la nouvelle plage lever/coucher
-    if (insolRise) {
-      var r = insolRise[ctrlJour], s = insolSet[ctrlJour];
-      if (r >= 0 && s >= 0)
-        ctrlHeure = Math.max(r + 0.001, Math.min(s - 0.001, ctrlHeure));
-      insolHour = ctrlHeure;
-    }
+    var rh1 = ctrlRiseSet();
+    if (rh1 && rh1.rise >= 0 && rh1.set >= 0)
+      ctrlHeure = Math.max(rh1.rise, Math.min(rh1.set, ctrlHeure));
+    insolHour = ctrlHeure;
     // Recalcul passe 2 si horizon déjà calculé
     declencherPasse2();
   } else if (idx === 2) {
     // Heure ± 15 min
     ctrlHeure += sens * 0.25;
-    if (insolRise) {
-      var r2 = insolRise[ctrlJour], s2 = insolSet[ctrlJour];
-      if (r2 >= 0 && s2 >= 0)
-        ctrlHeure = Math.max(r2 + 0.001, Math.min(s2 - 0.001, ctrlHeure));
-    }
+    var rh2 = ctrlRiseSet();
+    if (rh2 && rh2.rise >= 0 && rh2.set >= 0)
+      ctrlHeure = Math.max(rh2.rise, Math.min(rh2.set, ctrlHeure));
     insolHour = ctrlHeure;
   }
   ctrlRendrePanneau();
 }
-
-// ── Clavier ↑↓←→ ────────────────────────────────────────────────
-document.addEventListener('keydown', function(e) {
-  if (!modeGlacier) return;
+window.addEventListener('keydown', function(e) {
+  // J'ai aussi ajouté la logique Haut/Bas évoquée dans vos commentaires si vous le souhaitez :
   if (e.key === 'ArrowUp')    { e.preventDefault(); ctrlActif = Math.max(0, ctrlActif - 1); ctrlRendrePanneau(); }
   if (e.key === 'ArrowDown')  { e.preventDefault(); ctrlActif = Math.min(2, ctrlActif + 1); ctrlRendrePanneau(); }
   if (e.key === 'ArrowLeft')  { e.preventDefault(); ctrlIncrementer(ctrlActif, -1); }
@@ -752,27 +650,24 @@ document.addEventListener('keydown', function(e) {
     pct = Math.max(0, Math.min(1, pct));
     if (idx === 0) {
       ctrlAnnee = Math.round(CTRL_ANNEE_MIN + pct * (CTRL_ANNEE_MAX - CTRL_ANNEE_MIN));
-      if (GEO && modeGlacier) lancerInsolation();
       declencherPasse2();
+      if (typeof insolActive !== 'undefined' && insolActive) insolRecalcul();
+      if (typeof tempActive  !== 'undefined' && tempActive)  tempRecalcul();
     } else if (idx === 1) {
       ctrlJour = Math.round(pct * 364);
       insolDay = ctrlJour;
-      if (insolRise) {
-        var r2 = insolRise[ctrlJour], s2 = insolSet[ctrlJour];
-        if (r2 >= 0 && s2 >= 0)
-          ctrlHeure = Math.max(r2 + 0.001, Math.min(s2 - 0.001, ctrlHeure));
-        insolHour = ctrlHeure;
-      }
+      var rh3 = ctrlRiseSet();
+      if (rh3 && rh3.rise >= 0 && rh3.set >= 0)
+        ctrlHeure = Math.max(rh3.rise, Math.min(rh3.set, ctrlHeure));
+      insolHour = ctrlHeure;
       declencherPasse2();
     } else {
-      if (insolRise) {
-        var r3 = insolRise[ctrlJour], s3 = insolSet[ctrlJour];
-        if (r3 >= 0 && s3 >= 0) {
-          ctrlHeure = r3 + pct * (s3 - r3);
-          ctrlHeure = Math.max(r3 + 0.001, Math.min(s3 - 0.001, ctrlHeure));
-          insolHour = ctrlHeure;
-        }
+      var rh4 = ctrlRiseSet();
+      if (rh4 && rh4.rise >= 0 && rh4.set >= 0) {
+        ctrlHeure = rh4.rise + pct * (rh4.set - rh4.rise);
+        ctrlHeure = Math.max(rh4.rise, Math.min(rh4.set, ctrlHeure));
       }
+      insolHour = ctrlHeure;
     }
     ctrlRendrePanneau();
   }
@@ -814,927 +709,6 @@ function ctrlFermer() {
 }
 
 // ════════════════════════════════════════════════════════════════
-// MODE TOGGLE — Robinet / Glacier
-// ════════════════════════════════════════════════════════════════
-let modeGlacier = false;
-const btnMode   = document.getElementById('btn-mode');
-
-btnMode.addEventListener('click', () => {
-  modeGlacier = !modeGlacier;
-  btnMode.textContent  = modeGlacier ? '🏔️ Glacier' : '🌊 Robinet';
-  btnMode.classList.toggle('glacier', modeGlacier);
-  if (modeGlacier) {
-    if (!GEO) {
-      document.getElementById('vstatus').textContent =
-        'Charger un fichier DSM d\'abord';
-      modeGlacier = false;
-      btnMode.textContent = '🌊 Robinet';
-      btnMode.classList.remove('glacier');
-      return;
-    }
-    ctrlOuvrir();
-    lancerInsolation();
-  } else {
-    ctrlFermer();
-    if (insolWorker) { insolWorker.terminate(); insolWorker = null; }
-  }
-});
-
-// ════════════════════════════════════════════════════════════════
-// PANNEAU LEVER / COUCHER — navigation molette
-// ════════════════════════════════════════════════════════════════
-let insolRise = null, insolSet = null;    // Float32Array[365] une fois calculés
-let insolDay  = 172;                      // jour courant affiché (0-based, 172=~solstice été)
-let insolHour = -1;                       // heure UTC courante (-1 = non initialisée)
-let ombreHorizonPret = false;             // true quand passe 1 terminée
-let ombreSrcImg      = null;              // ImageData source capturée au départ passe 1
-let ombreInstantRAF  = 0;                 // RAF en attente pour ombreInstant
-let insolWorker = null;
-
-const MOIS = ['Jan','Fév','Mar','Avr','Mai','Jun','Jul','Aoû','Sep','Oct','Nov','Déc'];
-const MOIS_DEBUT = [0,31,59,90,120,151,181,212,243,273,304,334]; // j=0-based
-
-function jourVersDate(j) {  // j 0-based
-  var m = 11;
-  for (var i = 0; i < 12; i++) if (j < MOIS_DEBUT[i+1 < 12 ? i+1 : 12]) { m=i; break; }
-  var d = j - MOIS_DEBUT[m] + 1;
-  return MOIS[m] + ' ' + d;
-}
-
-function hDecToHHMM(h) {
-  if (h < 0) return 'nuit';
-  var hh = Math.floor(h), mm = Math.round((h - hh) * 60);
-  if (mm === 60) { hh++; mm = 0; }
-  return String(hh).padStart(2,'0') + 'h' + String(mm).padStart(2,'0');
-}
-
-// ════════════════════════════════════════════════════════════════
-// lancerInsolation — appelée au clic Glacier ou changement d'année
-// Utilise ctrlTka() pour l'époque et met à jour les sliders au retour
-// ════════════════════════════════════════════════════════════════
-function lancerInsolation() {
-  var latCentre = (GEO.latMax + GEO.latMin) / 2.0;
-  var lonCentre = (GEO.lonMax + GEO.lonMin) / 2.0;
-
-  document.getElementById('vstatus').textContent =
-    '☀️ Calcul lever/coucher ' + latCentre.toFixed(3) + '° lat (an ' + ctrlAnnee + ')…';
-
-  if (insolWorker) { insolWorker.terminate(); }
-  var blob = new Blob([INSOL_WORKER_SRC], {type:'application/javascript'});
-  var url  = URL.createObjectURL(blob);
-  insolWorker = new Worker(url);
-  URL.revokeObjectURL(url);
-
-  insolWorker.onmessage = function(e) {
-    if (e.data.type !== 'done') return;
-    insolRise = e.data.rise;
-    insolSet  = e.data.set;
-    insolWorker.terminate(); insolWorker = null;
-    // Synchroniser le jour courant depuis le slider
-    insolDay = ctrlJour;
-    // Initialiser ou clamper l'heure dans la plage lever/coucher du jour
-    var r = insolRise[ctrlJour], s = insolSet[ctrlJour];
-    if (r >= 0 && s >= 0) {
-      if (ctrlHeure <= 0) ctrlHeure = (r + s) / 2;
-      ctrlHeure = Math.max(r + 0.001, Math.min(s - 0.001, ctrlHeure));
-    }
-    insolHour = ctrlHeure;
-    ctrlRendrePanneau();
-    document.getElementById('vstatus').textContent =
-      '☀️ Lever/coucher prêt — ↑↓ slider actif  ←→ valeur';
-  };
-
-  insolWorker.onerror = function(err) {
-    document.getElementById('vstatus').textContent = 'Erreur worker insol : ' + err.message;
-  };
-
-  insolWorker.postMessage({
-    type    : 'sunpath',
-    lat_rad : latCentre * Math.PI / 180.0,
-    lon_deg : lonCentre,
-    t_ka    : ctrlTka()
-  });
-}
-
-// ════════════════════════════════════════════════════════════════════════════
-// PHASE 1 — MASQUE D'OMBRE TERRAIN
-// Spec    : spec-masque-ombre-terrain.md v1.0 (2026-06-09)
-// Algo    : Variante B — balayage transformé O(N) par azimut
-// Source  : La2004+IMCCE (worker existant) + insolsub_f.f (BDL/IMCCE)
-// Arbitrages retenus : B-variante, N=64 azimuts, B2 bord, R=apparent,
-//                      M=par ligne, S=bilinéaire
-// ════════════════════════════════════════════════════════════════════════════
-
-// ── Constantes ───────────────────────────────────────────────────────────────
-const OMBRE_N_AZ  = 64;          // azimuts discrétisés 0..360° (spec §3.3)
-const OMBRE_R     = 6371000;     // rayon terrestre moyen (m)
-const OMBRE_DIM   = 1024;        // taille grille
-const OMBRE_SHADE = 0.35;        // facteur ombre (spec §5)
-
-// ── État global Phase 1 ───────────────────────────────────────────────────────
-let ombreHorizon   = null;  // Int16Array[N*N_AZ] — H[pixel][azimut] en centi-degrés
-let ombreHmin      = null;  // Int16Array[N]       — H_min par pixel
-let ombreHmax      = null;  // Int16Array[N]       — H_max par pixel
-let ombreHbord     = null;  // Uint8Array[N*N_AZ]  — 1 si crête = bord tuile (B2)
-// Copies permanentes de l'horizon — survivent au transfert zero-copy vers le worker passe 2
-let ombreHorizonCopy = null;
-let ombreHminCopy    = null;
-let ombreHmaxCopy    = null;
-let ombreHbordCopy   = null;
-let ombreMask      = null;  // Uint8Array[nSteps*N]— shadowMask[t*N+idx]
-let ombreSunAz     = null;  // Float32Array[nSteps]— azimut soleil chaque pas
-let ombreSunEl     = null;  // Float32Array[nSteps]— élévation soleil chaque pas
-let ombreNSteps    = 0;
-let ombreHeureStart = 0;
-let ombreRafId     = 0;
-let ombreStep      = 0;
-let ombreRunning   = false;
-let ombreSliderDirty = false;  // true = un slider a changé → passe 3 doit rendre 1 frame
-
-// ── HORIZON_WORKER_SRC — Passe 1, variante B ────────────────────────────────
-// Reçoit  : { type:'horizon', elev(Float32Array), W, H, resX_row(Float32Array),
-//             resY, azIdx, nAz, R }
-// Envoie  : { type:'done', azIdx,
-//             horizLine(Int16Array[W*H]), bordLine(Uint8Array[W*H]) }
-const HORIZON_WORKER_SRC = `
-"use strict";
-// ── Passe 1 Variante B : balayage transformé le long de lignes d'azimut ──────
-// Source physique : spec §3.1 — transformée z'(s) = z(s) - s²/(2R)
-// La pente vraie P→Q = [z'(Q)-z'(P)]/(d) + s_P/R  (démontrée dans spec §3.1)
-// L'argmax sur Q est inchangé dans l'espace transformé.
-// Algorithme horizon O(N) amorti : pile de crêtes dominantes (convex hull)
-
-self.onmessage = function(ev) {
-  var d = ev.data;
-  // 'init' : recevoir et garder la grille une seule fois (worker persistant)
-  if (d.type === 'init') { self.C = d; return; }
-  if (d.type !== 'horizon') return;
-  var C = self.C;
-
-  var elev    = C.elev;        // Float32Array[W*H] — cache persistant
-  var W       = C.W;
-  var H       = C.H;
-  var resX_row= C.resX_row;    // Float32Array[H] — resX par ligne (m/pixel)
-  var resY    = C.resY;        // m/pixel vertical
-  var nAz     = C.nAz;         // 64
-  var R       = C.R;           // 6 371 000
-  var azIdx   = d.azIdx;       // index azimut 0..nAz-1 — seul paramètre par appel
-
-  // Azimut en radians (géographique : 0=nord sens horaire)
-  var azDeg = azIdx * 360.0 / nAz;
-  var azRad = azDeg * Math.PI / 180.0;
-
-  // Direction de balayage dans la grille (col, row) normalisée
-  // Convention image : axe row vers le bas = sud
-  // azimut 0°=nord → dRow=-1, dCol=0
-  // azimut 90°=est  → dRow=0,  dCol=+1
-  var sinAz = Math.sin(azRad);   // composante est
-  var cosAz = Math.cos(azRad);   // composante nord
-  var dCol  =  sinAz;            // direction col (est = col croissant)
-  var dRow  = -cosAz;            // direction row (nord = row décroissant)
-
-  // Résultat
-  var horizLine = new Int16Array(W * H);    // H[pixel][azIdx] en centi-degrés
-  var bordLine  = new Uint8Array(W * H);    // 1 si crête est sur bord tuile
-
-  // ── Génération des lignes de balayage parallèles à azRad ────────────────
-  // On balaie toutes les origines sur les deux bords perpendiculaires
-  // (bord gauche+bas pour azimut entre 0° et 180°, etc.)
-  // Plus simple : on énumère tous les pixels de départ sur les 4 bords
-  // en ne gardant que ceux dont la direction "entre" dans la grille.
-
-  // Stocker les lignes déjà traitées (un pixel ne doit être visité qu'une fois)
-  var visited = new Uint8Array(W * H);
-
-  // Origine : parcourir les 4 bords et collecter les points d'entrée
-  var starts = [];
-
-  // Bord haut (row=0) : valide si dRow > 0 (on va vers le bas = sud)
-  // Bord bas  (row=H-1) : valide si dRow < 0 (on va vers le haut = nord)
-  // Bord gauche (col=0) : valide si dCol > 0
-  // Bord droit  (col=W-1) : valide si dCol < 0
-  if (dRow > 1e-9)  for (var c=0;c<W;c++) starts.push([c, 0]);
-  if (dRow < -1e-9) for (var c=0;c<W;c++) starts.push([c, H-1]);
-  if (dCol > 1e-9)  for (var r=0;r<H;r++) starts.push([0, r]);
-  if (dCol < -1e-9) for (var r=0;r<H;r++) starts.push([W-1, r]);
-
-  // Dédoublonner (coins comptés deux fois)
-  // Simple : visited protège déjà contre le double traitement
-
-  for (var si = 0; si < starts.length; si++) {
-    var c0 = starts[si][0], r0 = starts[si][1];
-
-    // Construire la ligne de balayage depuis (c0,r0) dans la direction (dCol,dRow)
-    // au pas d'un pixel — échantillonnage bilinéaire
-    var lineC = [], lineR = [], lineZ = [], lineD = [];
-    var fc = c0, fr = r0, s = 0;
-
-    while (fc >= 0 && fc <= W-1 && fr >= 0 && fr <= H-1) {
-      var ic = Math.floor(fc), ir = Math.floor(fr);
-	if (ic >= W - 1) ic = W - 2;
-        if (ir >= H - 1) ir = H - 2;
-
-      var tx = fc - ic, ty = fr - ir;
-      // Bilinéaire sur elevGrid
-      var z = elev[ir*W+ic]     * (1-tx)*(1-ty)
-            + elev[ir*W+ic+1]   * tx    *(1-ty)
-            + elev[(ir+1)*W+ic] * (1-tx)*ty
-            + elev[(ir+1)*W+ic+1]* tx   *ty;
-      lineC.push(fc); lineR.push(fr); lineZ.push(z); lineD.push(s);
-
-      // Incrément de distance physique en mètres
-      var rowI = Math.round(fr);
-      if (rowI < 0) rowI = 0; if (rowI >= H) rowI = H-1;
-      var rx = resX_row[rowI];
-      var ds = Math.sqrt(dCol*dCol*rx*rx + dRow*dRow*resY*resY);
-      s += ds;
-      fc += dCol; fr += dRow;
-    }
-    var n = lineC.length;
-    if (n < 2) continue;
-
-    // ── Transformée z'(s) = z(s) - s²/(2R) ─────────────────────────────
-    var zp = new Float64Array(n);
-    for (var i = 0; i < n; i++) {
-      zp[i] = lineZ[i] - lineD[i]*lineD[i] / (2*R);
-    }
-
-    // ── Algorithme horizon O(N) — pile enveloppe convexe supérieure ─────
-    // Parcours arrière→avant. Pour P[i], horizon = max pente vers Q[j] j>i.
-    // Pile contient les candidats j potentiellement dominants.
-    // Nettoyage : retirer j1=stack[top-1] si la pente i→j2 > pente i→j1
-    // (j2 plus loin ET plus haut en pente → j2 domine j1 pour tout i'<=i)
-    // Source : algorithme standard horizon scanning (Franklin & Ray 1994)
-    var hMax   = new Float64Array(n);
-    var isBord = new Uint8Array(n);
-    var stack  = new Int32Array(n);
-    var top    = 0;
-
-    // Initialiser avec le dernier point
-    stack[top++] = n - 1;
-
-    for (var i = n - 2; i >= 0; i--) {
-      var sP = lineD[i], zP = zp[i];
-
-      // Nettoyer pile : retirer stack[top-1] si dominé par stack[top-2]
-      // Dominé = pente(i→j2) > pente(i→j1) pour j2=stack[top-2], j1=stack[top-1]
-      while (top >= 2) {
-        var j1 = stack[top-1], j2 = stack[top-2];
-        var d1 = lineD[j1] - sP, d2 = lineD[j2] - sP;
-        if (d1 <= 0 || d2 <= 0) break;
-        var p1 = (zp[j1] - zP) / d1;
-        var p2 = (zp[j2] - zP) / d2;
-        if (p2 <= p1) break;  // j1 dominant ou égal → garder
-        top--;                 // j2 domine j1 → dépiler j1
-      }
-
-      // Horizon = pente vers le sommet de pile (le plus dominant)
-      var jH = stack[top - 1];
-      var dH = lineD[jH] - sP;
-      var penteT = dH > 0 ? (zp[jH] - zP) / dH : -Infinity;
-      hMax[i]   = Math.atan(penteT + sP / R);  // correction courbure spec §3.1
-      isBord[i] = (jH === n - 1) ? 1 : 0;
-
-      stack[top++] = i;
-    }
-    hMax[n-1]   = -Math.PI / 2;  // dernier point : rien devant → -90°
-    isBord[n-1] = 0;
-
-    // ── Affecter les résultats aux pixels ────────────────────────────────
-    for (var i = 0; i < n; i++) {
-      var col = Math.round(lineC[i]);
-      var row = Math.round(lineR[i]);
-      if (col < 0||col>=W||row<0||row>=H) continue;
-      var idx = row*W + col;
-      if (visited[idx]) continue;
-      visited[idx] = 1;
-      // Convertir en centi-degrés Int16 (spec §3.3)
-      var hCd = Math.round(hMax[i] * (180/Math.PI) * 100);
-      if (hCd < -9000) hCd = -9000;
-      if (hCd >  9000) hCd =  9000;
-      horizLine[idx] = hCd;
-      bordLine[idx]  = isBord[i];
-    }
-  }
-
-  // Pixels non visités (ne se trouvaient sur aucune ligne d'entrée)
-  // → horizon = -90° (toujours visible) en dernier recours
-  for (var idx=0; idx<W*H; idx++) {
-    if (!visited[idx]) horizLine[idx] = -9000;
-  }
-
-  self.postMessage(
-    { type:'done', azIdx:azIdx, horizLine:horizLine, bordLine:bordLine },
-    [horizLine.buffer, bordLine.buffer]
-  );
-};
-`;
-
-// ── SHADOW_WORKER_SRC — Passe 2, grille complète ────────────────────────────
-// Reçoit  : { type:'shadow', W, H, nAz, nSteps,
-//             horizon(Int16Array W*H*nAz), hmin/hmax(Int16Array W*H),
-//             bord(Uint8Array W*H*nAz), sunAz/sunEl(Float32Array nSteps),
-//             eMin, eMax }
-// Envoie  : { type:'progress', pct } toutes les ~5%
-//           { type:'done', mask, horizon, hmin, hmax, bord } — restitution buffers
-const SHADOW_WORKER_SRC = `
-"use strict";
-self.onmessage = function(ev) {
-  var d = ev.data;
-  if (d.type !== 'shadow') return;
-
-  var W       = d.W, H = d.H;
-  var nAz     = d.nAz, nSteps = d.nSteps;
-  var horizon = d.horizon;   // Int16Array[W*H*nAz]
-  var hmin    = d.hmin;      // Int16Array[W*H]
-  var hmax    = d.hmax;      // Int16Array[W*H]
-  var bord    = d.bord;      // Uint8Array[W*H*nAz]
-  var sunAz   = d.sunAz;     // Float32Array[nSteps] degrés
-  var sunEl   = d.sunEl;     // Float32Array[nSteps] degrés
-  var eMin    = d.eMin;      // degrés élévation min
-  var eMax    = d.eMax;      // degrés élévation max
-
-  var N       = W * H;
-  var azStep  = 360.0 / nAz;
-  var mask    = new Uint8Array(nSteps * N);
-  var lastPct = 0;
-
-  for (var t = 0; t < nSteps; t++) {
-    var azSun  = sunAz[t];
-    var elSun  = sunEl[t];
-    var azNorm = ((azSun % 360) + 360) % 360;
-    var azFrac = azNorm / azStep;
-    var az0    = Math.floor(azFrac) % nAz;
-    var az1    = (az0 + 1) % nAz;
-    var frac   = azFrac - Math.floor(azFrac);
-    var tOff   = t * N;
-
-    for (var idx = 0; idx < N; idx++) {
-      var hmaxP = hmax[idx] / 100.0;
-      var hminP = hmin[idx] / 100.0;
-      var m;
-      if (hminP > eMax) {
-        m = 1;  // fond de vallée — toujours ombre
-      } else if (hmaxP < eMin) {
-        m = 0;  // crête dégagée — jamais ombre
-      } else {
-        var h0 = horizon[idx * nAz + az0] / 100.0;
-        var h1 = horizon[idx * nAz + az1] / 100.0;
-        var hI = h0 + frac * (h1 - h0);
-        m = (elSun < hI) ? 1 : 0;
-        // B2 : incertitude bord
-        if (bord[idx * nAz + az0] || bord[idx * nAz + az1]) m |= 0x02;
-      }
-      mask[tOff + idx] = m;
-    }
-
-    // Progress toutes les 5%
-    var pct = Math.round((t + 1) / nSteps * 100);
-    if (pct >= lastPct + 5) {
-      lastPct = pct;
-      self.postMessage({ type:'progress', pct:pct });
-    }
-  }
-
-  // Restituer les buffers + le masque
-  self.postMessage(
-    { type:'done', mask:mask,
-      horizon:horizon, hmin:hmin, hmax:hmax, bord:bord },
-    [mask.buffer, horizon.buffer, hmin.buffer, hmax.buffer, bord.buffer]
-  );
-};
-`;
-
-// ── ÉTAT PASSE 1 — pool parallèle ────────────────────────────────────────────
-let ombreAzCourant   = -1;   // prochain azimut à lancer
-let ombreAzDone      = 0;    // nombre d'azimuts intégrés
-let ombreElev1024    = null; // grille rééchantillonnée 1024×1024 (réutilisée)
-let ombreResX        = null; // Float32Array[1024] resX par ligne
-let ombreResY        = 0;    // m/pixel vertical
-let ombreWorkerActif = null; // worker passe 2 (1 seul)
-let ombrePool        = [];   // workers passe 1 actifs
-
-function lancerOmbre() {
-  if (!elevGrid || !GEO) {
-    document.getElementById('vstatus').textContent = 'Charger un DSM d\'abord';
-    return;
-  }
-  if (ombreRafId) { cancelAnimationFrame(ombreRafId); ombreRafId = 0; }
-  // Tuer les workers passe 1 et passe 2 éventuellement actifs
-  ombrePool.forEach(function(w){ w.terminate(); });
-  ombrePool = [];
-  if (ombreWorkerActif) { ombreWorkerActif.terminate(); ombreWorkerActif = null; }
-  ombreRunning   = true;
-  ombreAzCourant = 0;
-  ombreAzDone    = 0;
-  ombreHorizonPret = false;
-
-  var W = OMBRE_DIM, H = OMBRE_DIM, N = W * H, nAz = OMBRE_N_AZ;
-  var lat0 = GEO.latMin, lat1 = GEO.latMax;
-
-  // Capturer source hypso (grille complète)
-  var tmpCv  = new OffscreenCanvas(W, H);
-  var tmpCtx = tmpCv.getContext('2d');
-  tmpCtx.drawImage(oscHypso, 0, 0, imgW, imgH, 0, 0, W, H);
-  ombreSrcImg = tmpCtx.getImageData(0, 0, W, H);
-
-  // Métriques
-  ombreResY = 111320 * (lat1 - lat0) / H;
-  ombreResX = new Float32Array(H);
-  for (var r = 0; r < H; r++) {
-    var lat = lat1 - (r + 0.5) / H * (lat1 - lat0);
-    ombreResX[r] = 111320 * Math.cos(lat * Math.PI / 180) *
-                   (GEO.lonMax - GEO.lonMin) / W;
-  }
-
-  // Rééchantillonnage elevGrid → 1024×1024
-  ombreElev1024 = new Float32Array(N);
-  var sx = (imgW - 1) / (W - 1), sy = (imgH - 1) / (H - 1);
-  for (var rr = 0; rr < H; rr++) {
-    var fy = rr * sy, iy = Math.min(Math.floor(fy), imgH-2), ty = fy - iy;
-    for (var cc = 0; cc < W; cc++) {
-      var fx = cc * sx, ix = Math.min(Math.floor(fx), imgW-2), tx = fx - ix;
-      ombreElev1024[rr*W+cc] =
-        elevGrid[ iy   *imgW+ix  ]*(1-tx)*(1-ty) +
-        elevGrid[ iy   *imgW+ix+1]*   tx *(1-ty) +
-        elevGrid[(iy+1)*imgW+ix  ]*(1-tx)*   ty  +
-        elevGrid[(iy+1)*imgW+ix+1]*   tx *   ty;
-    }
-  }
-
-  // Allouer la map horizon complète
-  ombreHorizon = new Int16Array(N * nAz);
-  ombreHmin    = new Int16Array(N);
-  ombreHmax    = new Int16Array(N);
-  ombreHbord   = new Uint8Array(N * nAz);
-  ombreHmin.fill(9000);
-  ombreHmax.fill(-9000);
-
-  // Pool persistant : NW workers, grille envoyée 1 fois chacun, azimuts en file
-  var NW = Math.min(OMBRE_N_AZ, navigator.hardwareConcurrency || 4);
-  var blob = new Blob([HORIZON_WORKER_SRC], {type:'application/javascript'});
-  var url  = URL.createObjectURL(blob);
-
-  for (var k = 0; k < NW; k++) {
-    var w = new Worker(url);
-    ombrePool.push(w);
-    var elevCopy = new Float32Array(ombreElev1024);
-    var resXCopy = new Float32Array(ombreResX);
-    w.postMessage({
-      type: 'init', elev: elevCopy,
-      W: W, H: H, resX_row: resXCopy, resY: ombreResY,
-      nAz: nAz, R: OMBRE_R
-    }, [elevCopy.buffer, resXCopy.buffer]);
-
-    w.onmessage = ombreAzCallback;
-    w.onerror   = function(err) {
-      document.getElementById('vstatus').textContent = 'Erreur horizon: ' + err.message;
-    };
-    // Premier azimut de ce worker
-    w.postMessage({ type: 'horizon', azIdx: ombreAzCourant++ });
-  }
-  URL.revokeObjectURL(url);
-}
-
-// ── ombreAzCallback — intègre un azimut, redonne du travail au worker ────────
-function ombreAzCallback(ev) {
-  var res = ev.data;
-  if (res.type !== 'done') return;
-  var w   = ev.target;
-  var nAz = OMBRE_N_AZ, N = OMBRE_DIM * OMBRE_DIM;
-
-  var az = res.azIdx;
-  var hl = res.horizLine, bl = res.bordLine;
-  for (var i = 0; i < N; i++) {
-    ombreHorizon[i * nAz + az] = hl[i];
-    ombreHbord  [i * nAz + az] = bl[i];
-    if (hl[i] < ombreHmin[i]) ombreHmin[i] = hl[i];
-    if (hl[i] > ombreHmax[i]) ombreHmax[i] = hl[i];
-  }
-  ombreAzDone++;
-  document.getElementById('vstatus').textContent =
-    '🏔️ Horizons ' + ombreAzDone + '/' + nAz + '…';
-  document.getElementById('btn-ombre').textContent = '⏳ ' + ombreAzDone + '/' + nAz + '…';
-
-  if (ombreAzCourant < nAz) {
-    // Redonner du travail au même worker — pas de recréation
-    w.postMessage({ type: 'horizon', azIdx: ombreAzCourant++ });
-  } else {
-    // Plus d'azimut à distribuer : ce worker a fini
-    w.terminate();
-    var idx = ombrePool.indexOf(w);
-    if (idx >= 0) ombrePool.splice(idx, 1);
-  }
-
-  if (ombreAzDone === nAz) {
-    ombreHorizonPret = true;
-    document.getElementById('btn-ombre').textContent = '⏳ Passe 2…';
-    lancerPasse2();
-  }
-}
-
-
-// ── Passe 2 : position solaire + remplissage masque ──────────────────────────
-function lancerPasse2() {
-  document.getElementById('vstatus').textContent =
-    '🏔️ Passe 2 : position solaire…';
-
-  var W = OMBRE_DIM, H = OMBRE_DIM;
-  var lat = (GEO.latMax + GEO.latMin) / 2;
-  var lon = (GEO.lonMax + GEO.lonMin) / 2;
-
-  var orb   = ombreOrbital(ctrlTka());
-  var e     = orb.e, eps = orb.eps, pib = orb.pib;
-  var pibar = pib + Math.PI;
-  var latR  = lat * Math.PI / 180;
-
-  var riseH = ombreSunRiseSetH(ctrlJour, e, eps, pibar, latR, lon);
-  if (riseH.rise < 0) {
-    document.getElementById('vstatus').textContent = 'Nuit polaire — pas d\'ombre';
-    document.getElementById('btn-ombre').textContent = '🌑 Ombre';
-    return;
-  }
-
-  var tStart = riseH.rise + 0.25;
-	ombreHeureStart = tStart;
-  var tEnd   = riseH.set  - 0.25;
-  var nSteps = Math.max(1, Math.ceil((tEnd - tStart) / 0.25));
-  ombreNSteps = nSteps;
-
-  ombreSunAz = new Float32Array(nSteps);
-  ombreSunEl = new Float32Array(nSteps);
-  var eMin = Infinity, eMax = -Infinity;
-
-  for (var t = 0; t < nSteps; t++) {
-    var hUTC = tStart + t * 0.25;
-    var pos  = ombreSunPos(ctrlJour, hUTC, e, eps, pibar, latR, lon);
-    ombreSunAz[t] = pos.az;
-    ombreSunEl[t] = pos.el;
-    if (pos.el < eMin) eMin = pos.el;
-    if (pos.el > eMax) eMax = pos.el;
-  }
-
-  document.getElementById('vstatus').textContent =
-    '🏔️ Passe 2 : masque ombre ' + nSteps + ' pas…';
-
-  // Un seul worker passe 2 — reçoit tout par transfert zero-copy
-  // Le worker retourne le masque complet + restitue les tableaux horizon
-  var blob = new Blob([SHADOW_WORKER_SRC], {type:'application/javascript'});
-  var url  = URL.createObjectURL(blob);
-  var w    = new Worker(url);
-  URL.revokeObjectURL(url);
-  ombreWorkerActif = w;
-
-  w.onmessage = function(ev) {
-    var res = ev.data;
-    if (res.type === 'progress') {
-      document.getElementById('vstatus').textContent =
-        '🏔️ Passe 2 : ' + res.pct + '% …';
-      return;
-    }
-    if (res.type !== 'done') return;
-    w.terminate();
-    ombreMask    = res.mask;
-    ombreHorizon = res.horizon;
-    ombreHmin    = res.hmin;
-    ombreHmax    = res.hmax;
-    ombreHbord   = res.bord;
-    // Copies permanentes pour lancerPasse2Seule (survivent aux transferts suivants)
-    ombreHorizonCopy = new Int16Array(ombreHorizon);
-    ombreHminCopy    = new Int16Array(ombreHmin);
-    ombreHmaxCopy    = new Int16Array(ombreHmax);
-    ombreHbordCopy   = new Uint8Array(ombreHbord);
-    ombreHorizonPret = true;
-    lancerPasse3();
-  };
-
-  w.onerror = function(err) {
-    document.getElementById('vstatus').textContent = 'Erreur passe 2: ' + err.message;
-  };
-
-  // Sauvegarder sunAz/El AVANT transfert (le worker les possède après)
-  var sunAzSave = new Float32Array(ombreSunAz);
-  var sunElSave = new Float32Array(ombreSunEl);
-
-  // Transfert zero-copy — le worker possède les buffers pendant le calcul
-  w.postMessage({
-    type: 'shadow',
-    W: W, H: H, nAz: OMBRE_N_AZ, nSteps: nSteps,
-    horizon: ombreHorizon, hmin: ombreHmin,
-    hmax: ombreHmax, bord: ombreHbord,
-    sunAz: ombreSunAz, sunEl: ombreSunEl,
-    eMin: eMin, eMax: eMax
-  }, [ombreHorizon.buffer, ombreHmin.buffer,
-      ombreHmax.buffer, ombreHbord.buffer,
-      ombreSunAz.buffer, ombreSunEl.buffer]);
-
-  // Restaurer les copies pour passe3 et ombreInstant
-  ombreSunAz = sunAzSave;
-  ombreSunEl = sunElSave;
-  ombreHorizon = ombreHmin = ombreHmax = ombreHbord = null;
-}
-
-// ── Passe 3 — rendu à la demande (1 frame par changement de slider) ──────────
-// ombreSliderDirty = true → afficher le pas courant → s'arrêter
-// Pas de boucle RAF permanente : appelé uniquement quand un slider change
-function lancerPasse3() {
-  document.getElementById('vstatus').textContent =
-    '🏔️ Masque prêt — ' + ombreNSteps + ' pas de 15 min — naviguez via les sliders';
-  document.getElementById('btn-ombre').textContent = '⏹ Stop ombre';
-  document.getElementById('btn-rec').disabled   = false;
-  document.getElementById('btn-video').disabled = false;
-  ombreStep    = 0;
-  ombreRunning = true;
-  document.getElementById('btn-ombre').classList.add('active');
-
-  // Capturer la source hypso une seule fois
-  var W = OMBRE_DIM, H = OMBRE_DIM;
-  var osc = (typeof currentOSC === 'function') ? currentOSC() : oscHypso;
-  if (!osc) { ombreRunning = false; return; }
-  var tmpCv  = new OffscreenCanvas(W, H);
-  var tmpCtx = tmpCv.getContext('2d');
-  tmpCtx.drawImage(osc, srcX, srcY, W * srcPPx, H * srcPPx, 0, 0, W, H);
-  ombrePasse3Src = tmpCtx.getImageData(0, 0, W, H);
-
-  // Rendre la frame initiale (pas 0)
-  ombreSliderDirty = true;
-  ombreRendreFrame();
-}
-
-// Source image capturée pour passe 3 (réutilisée à chaque frame)
-let ombrePasse3Src = null;
-
-// ── ombreRendreFrame — rend exactement 1 frame au pas ombreStep courant ──────
-// Appelé par : lancerPasse3 (init) + ctrlChangerPas (slider heure)
-function ombreRendreFrame() {
-  if (!ombreRunning || !ombreMask || !ombrePasse3Src) return;
-  if (!ombreSliderDirty) return;
-  ombreSliderDirty = false;
-
-  if (ombreRafId) { cancelAnimationFrame(ombreRafId); ombreRafId = 0; }
-  ombreRafId = requestAnimationFrame(function() {
-    ombreRafId = 0;
-    if (!ombreRunning || !ombreMask || !ombrePasse3Src) return;
-
-    var W   = OMBRE_DIM, H = OMBRE_DIM;
-    var t   = Math.max(0, Math.min(ombreNSteps - 1, ombreStep));
-    var off = t * W * H;
-
-    var imgData = ctx.createImageData(W, H);
-    var src = ombrePasse3Src.data, dst = imgData.data;
-
-    for (var i = 0; i < W * H; i++) {
-      var m = ombreMask[off + i];
-      var p = i * 4;
-      var f = (m & 0x01) ? ((m & 0x02) ? 0.50 : OMBRE_SHADE) : 1.0;
-      dst[p]   = src[p]   * f;
-      dst[p+1] = src[p+1] * f;
-      dst[p+2] = src[p+2] * f;
-      dst[p+3] = src[p+3];
-    }
-    ctx.putImageData(imgData, 0, 0);
-
-    var elStr = ombreSunEl ? ombreSunEl[t].toFixed(1) + '° él.' : '';
-    var azStr = ombreSunAz ? '  az.' + ombreSunAz[t].toFixed(1) + '°' : '';
-    document.getElementById('vstatus').textContent =
-      '🏔️ Pas ' + (t + 1) + '/' + ombreNSteps + ' — Soleil: ' + elStr + azStr;
-  });
-}
-
-// ── Fonctions astronomiques inline (même physique que INSOL_WORKER_SRC) ──────
-// Dupliquées ici pour le fil principal (passe 2 synchrone)
-// Source : La2004+IMCCE, insolsub_f.f (BDL/IMCCE 1993-2010)
-function ombreOrbital(t_ka) {
-  // Même table LA2004 que dans INSOL_WORKER_SRC — recopier les 3 premières entrées
-  // pour la validation, puis accès via la constante globale du worker
-  // En pratique on réutilise la logique : t_ka=0 → index 0
-  // Pour le fil principal on code un accès direct identique
-  // La table est embarquée dans INSOL_WORKER_SRC — ici on utilise
-  // les valeurs tabulées directement pour t=0 (cas par défaut)
-  // Pour un t_ka arbitraire, lancer un mini-worker ou copier la table ici
-  // Simplification Phase 1 : t_ka=0 hardcodé dans le fil principal
-  // (la table La2004 est dans le worker — pour le fil principal on
-  //  utilise les valeurs à t=0 connues)
-  if (t_ka === 0) {
-    return { e: 0.0167023622549, eps: 0.409092804222, pib: 1.79625699113 };
-  }
-  // TODO Phase 2 : accès table La2004 depuis fil principal
-  return { e: 0.0167023622549, eps: 0.409092804222, pib: 1.79625699113 };
-}
-
-function ombreVraimoy(hl, e, pibar) {
-  var eV = hl - pibar;
-  return hl
-    - 2*e                           * Math.sin(eV)
-    + (3*e*e/4 + e*e*e*e/8)         * Math.sin(2*eV)
-    - (e*e*e/3 + e*e*e*e*e/8)       * Math.sin(3*eV)
-    + 5*e*e*e*e/32                  * Math.sin(4*eV)
-    - 3*e*e*e*e*e/40                * Math.sin(5*eV);
-}
-
-function ombreMovrai(hlm, e, pibar) {
-  var eM = hlm - pibar;
-  return hlm
-    + (2*e - e*e*e/4 + 5*e*e*e*e*e/96) * Math.sin(eM)
-    + (5*e*e/4 - 11*e*e*e*e/24)         * Math.sin(2*eM)
-    + (13*e*e*e/12 - 43*e*e*e*e*e/64)   * Math.sin(3*eM)
-    + 103*e*e*e*e/96                     * Math.sin(4*eM)
-    + 1097*e*e*e*e*e/960                 * Math.sin(5*eM);
-}
-
-function ombreSunRiseSetH(j, e, eps, pibar, latR, lon) {
-  var hlm_eq = ombreVraimoy(0, e, pibar);
-  var hlm    = hlm_eq + (j - 80) * 2 * Math.PI / 365.25;
-  var wd     = ombreMovrai(hlm, e, pibar);
-  var sinD   = Math.sin(eps) * Math.sin(wd);
-  var decl   = Math.asin(Math.max(-1, Math.min(1, sinD)));
-  var cosH   = -Math.tan(latR) * Math.tan(decl);
-  if (cosH >  1) return { rise: -1, set: -1 };
-  if (cosH < -1) return { rise:  0, set: 24 };
-  var ho      = Math.acos(cosH);
-  var halfDay = ho * 12.0 / Math.PI;
-  var M       = hlm - pibar;
-  var eqt     = (-2*e*Math.sin(M) - Math.pow(Math.tan(eps/2),2)*Math.sin(2*wd))
-                * (180/Math.PI) * 4;
-  var noon    = 12.0 - eqt/60.0 - lon/15.0;
-  return { rise: noon - halfDay, set: noon + halfDay };
-}
-
-function ombreSunPos(j, hUTC, e, eps, pibar, latR, lon) {
-  // Longitude vraie du soleil à hUTC
-  var hlm_eq = ombreVraimoy(0, e, pibar);
-  var hlm    = hlm_eq + (j - 80 + (hUTC - 12.0) / 24.0) * 2 * Math.PI / 365.25;
-  var wd     = ombreMovrai(hlm, e, pibar);
-  var sinD   = Math.sin(eps) * Math.sin(wd);
-  var decl   = Math.asin(Math.max(-1, Math.min(1, sinD)));
-
-  // Angle horaire depuis longitude et heure UTC
-  var M    = hlm - pibar;
-  var eqt  = (-2*e*Math.sin(M) - Math.pow(Math.tan(eps/2),2)*Math.sin(2*wd))
-             * (180/Math.PI) * 4;  // minutes
-  // Temps solaire local en heures
-  var TSL  = hUTC + eqt/60.0 + lon/15.0;
-  var HA   = (TSL - 12.0) * 15.0 * Math.PI / 180.0;  // radians
-
-  // Élévation solaire
-  var sinEl = Math.sin(latR)*Math.sin(decl) + Math.cos(latR)*Math.cos(decl)*Math.cos(HA);
-  var elRad = Math.asin(Math.max(-1, Math.min(1, sinEl)));
-  // Réfraction atmosphérique (spec arbitrage R=apparent)
-  // Correction Bennet (1982) approchée : en degrés
-  var elDeg = elRad * 180 / Math.PI;
-  var refrac = 0;
-  if (elDeg > -0.575) {
-    refrac = 1.02 / Math.tan((elDeg + 10.3/(elDeg+5.11)) * Math.PI/180) / 60.0;
-  }
-  elDeg += refrac;
-
-  // Azimut (nord=0°, sens horaire)
-  var cosAz = (Math.sin(decl) - Math.sin(latR)*Math.sin(elRad*Math.PI/180))
-            / (Math.cos(latR)*Math.cos(elRad*Math.PI/180));
-  cosAz = Math.max(-1, Math.min(1, cosAz));
-  var azDeg = Math.acos(cosAz) * 180 / Math.PI;
-  if (Math.sin(HA) > 0) azDeg = 360 - azDeg;  // après-midi
-
-  return { az: azDeg, el: elDeg };
-}
-
-// ── lancerPasse2Seule — recalcul passe 2 uniquement (horizon passe 1 conservé)
-// Utilise les copies globales ombreHorizonCopy/* qui survivent aux transferts.
-// soloLever=true (mode vidéo) : calcule UNIQUEMENT le pas du lever — gain ×40
-function lancerPasse2Seule(soloLever) {
-  if (!ombreHorizonCopy || !ombreElev1024) return;
-  if (ombreWorkerActif) { ombreWorkerActif.terminate(); ombreWorkerActif = null; }
-
-  var W = OMBRE_DIM, H = OMBRE_DIM;
-  var lat = (GEO.latMax + GEO.latMin) / 2;
-  var lon = (GEO.lonMax + GEO.lonMin) / 2;
-
-  var orb   = ombreOrbital(ctrlTka());
-  var e     = orb.e, eps = orb.eps, pib = orb.pib;
-  var pibar = pib + Math.PI;
-  var latR  = lat * Math.PI / 180;
-
-  var riseH = ombreSunRiseSetH(ctrlJour, e, eps, pibar, latR, lon);
-  if (riseH.rise < 0) {
-    document.getElementById('vstatus').textContent = 'Nuit polaire — pas d\'ombre';
-    if (videoRunning && videoFrameReady) videoFrameReady();   // ne pas bloquer la vidéo
-    return;
-  }
-
-  var tStart = riseH.rise + 0.25;
-  ombreHeureStart = tStart;
-  var tEnd   = riseH.set - 0.25;
-  var nSteps = soloLever ? 1 : Math.max(1, Math.ceil((tEnd - tStart) / 0.25));
-  ombreNSteps = nSteps;
-
-  ombreSunAz = new Float32Array(nSteps);
-  ombreSunEl = new Float32Array(nSteps);
-  var eMin = Infinity, eMax = -Infinity;
-  for (var t = 0; t < nSteps; t++) {
-    var hUTC = tStart + t * 0.25;
-    var pos  = ombreSunPos(ctrlJour, hUTC, e, eps, pibar, latR, lon);
-    ombreSunAz[t] = pos.az;
-    ombreSunEl[t] = pos.el;
-    if (pos.el < eMin) eMin = pos.el;
-    if (pos.el > eMax) eMax = pos.el;
-  }
-
-  document.getElementById('vstatus').textContent =
-    '🏔️ Recalcul j' + (ctrlJour+1) + ' (' + jourVersDate(ctrlJour) + ') — ' + nSteps + ' pas…';
-
-  var blob = new Blob([SHADOW_WORKER_SRC], {type:'application/javascript'});
-  var url  = URL.createObjectURL(blob);
-  var w    = new Worker(url);
-  URL.revokeObjectURL(url);
-  ombreWorkerActif = w;
-
-  // Copies fraîches depuis les copies globales — transfert zero-copy vers le worker
-  var horizXfr = new Int16Array(ombreHorizonCopy);
-  var hminXfr  = new Int16Array(ombreHminCopy);
-  var hmaxXfr  = new Int16Array(ombreHmaxCopy);
-  var hbordXfr = new Uint8Array(ombreHbordCopy);
-  var sunAzXfr = new Float32Array(ombreSunAz);
-  var sunElXfr = new Float32Array(ombreSunEl);
-
-  w.onmessage = function(ev) {
-    var res = ev.data;
-    if (res.type === 'progress') {
-      document.getElementById('vstatus').textContent =
-        '🏔️ Recalcul j' + (ctrlJour+1) + ' : ' + res.pct + '%…';
-      return;
-    }
-    if (res.type !== 'done') return;
-    w.terminate();
-    ombreWorkerActif = null;
-    ombreMask = res.mask;
-    // Les buffers transférés sont consommés — on conserve les copies globales intactes
-
-    // Mode vidéo : chemin court — pas de recapture ni de rendu panneau
-    // (le RAF d'ombreRendreFrame écraserait l'overlay avant la capture JPEG)
-    if (videoRunning && videoFrameReady) { videoFrameReady(); return; }
-
-    // Recapturer la source hypso pour passe 3
-    var osc2 = currentOSC();
-    if (osc2) {
-      var tmpCv2  = new OffscreenCanvas(W, H);
-      var tmpCtx2 = tmpCv2.getContext('2d');
-      tmpCtx2.drawImage(osc2, srcX, srcY, W * srcPPx, H * srcPPx, 0, 0, W, H);
-      ombrePasse3Src = tmpCtx2.getImageData(0, 0, W, H);
-    }
-
-    // Positionner le slider heure au lever si hors plage
-    var r2 = insolRise ? insolRise[ctrlJour] : -1;
-    var s2 = insolSet  ? insolSet[ctrlJour]  : -1;
-    if (r2 >= 0 && s2 >= 0) {
-      if (ctrlHeure < r2 || ctrlHeure > s2) ctrlHeure = r2 + 0.001;
-      insolHour = ctrlHeure;
-    }
-    ctrlRendrePanneau();   // → ctrlMajPas → ombreRendreFrame via dirty flag
-
-    document.getElementById('vstatus').textContent =
-      '🏔️ j' + (ctrlJour+1) + ' (' + jourVersDate(ctrlJour) + ') — ' + nSteps + ' pas prêts';
-  };
-
-  w.onerror = function(err) {
-    document.getElementById('vstatus').textContent = 'Erreur recalcul: ' + err.message;
-    ombreWorkerActif = null;
-    if (videoRunning && videoFrameReady) videoFrameReady();
-  };
-
-  w.postMessage({
-    type: 'shadow',
-    W: W, H: H, nAz: OMBRE_N_AZ, nSteps: nSteps,
-    horizon: horizXfr, hmin: hminXfr,
-    hmax: hmaxXfr,     bord: hbordXfr,
-    sunAz: sunAzXfr,   sunEl: sunElXfr,
-    eMin: eMin, eMax: eMax
-  }, [horizXfr.buffer, hminXfr.buffer,
-      hmaxXfr.buffer,  hbordXfr.buffer,
-      sunAzXfr.buffer, sunElXfr.buffer]);
-}
-
-// ── Bouton stop ombre ─────────────────────────────────────────────────────────
-function stopOmbre() {
-  ombreRunning = false;
-  if (ombreRafId) { cancelAnimationFrame(ombreRafId); ombreRafId = 0; }
-  ombrePool.forEach(function(w){ w.terminate(); });
-  ombrePool = [];
-  if (ombreWorkerActif) { ombreWorkerActif.terminate(); ombreWorkerActif = null; }
-  document.getElementById('btn-ombre').textContent = '🌑 Ombre';
-  document.getElementById('btn-ombre').classList.remove('active');
-  render();
-}
-
-
-let activeWorker = null;
-function spawnWorker(){
-  if(activeWorker){ activeWorker.terminate(); activeWorker=null; }
-  const blob = new Blob([WORKER_SRC], {type:'application/javascript'});
-  const url  = URL.createObjectURL(blob);
-  const w    = new Worker(url);
-  URL.revokeObjectURL(url);
-  return w;
-}
 
 // ════════════════════════════════════════════════════════════════
 // CONSTANTES & ÉTAT GLOBAL
@@ -1743,14 +717,11 @@ const DISP  = 1024;
 const LEG_W = 80;
 
 let GEO = null, elevGrid = null;
+let ctrlPanneauOuvert = false;
 let oscHypso = null, oscContour = null, oscWater = null;
 let imgW = 0, imgH = 0, srcX = 0, srcY = 0, srcPPx = 1;
 let viewMode = 'hypso';
 let hypsoLUT = null, vminGlobal = 0, vmaxGlobal = 1000;
-
-// Simulation eau
-let wet=null, border=null, simRunning=false;
-let faucetIdx=-1, faucetElev=0, waterRise=0, waterLevel=0, touchesMer=false;
 
 // ════════════════════════════════════════════════════════════════
 // GÉOGRAPHIE & DMS
@@ -1798,14 +769,20 @@ const wrapEl  = document.getElementById('wrap');
 
 function resizeWrap() {
   const main   = document.getElementById('main');
-  const ctrlW  = (modeGlacier ? 138 : 0);   // #ctrl-panel visible en mode glacier
-  const avW    = main.offsetWidth - LEG_W - ctrlW - 24;
+  const ctrlEl = document.getElementById('ctrl-panel');
+  
+  // Calcule dynamiquement la largeur du panneau gauche s'il est visible (130px en CSS)
+  const ctrlW  = (ctrlEl && ctrlEl.classList.contains('visible')) ? 130 : 0;
+  const glW    = 0; // Résidu d'une ancienne version, mis à 0 pour éviter l'erreur
+  
+  const avW    = main.offsetWidth - LEG_W - ctrlW - glW - 24;
   const sz     = Math.min(avW, main.offsetHeight);
   wrapEl.style.width  = sz + 'px';
   wrapEl.style.height = sz + 'px';
   const lcv = document.getElementById('lcv');
   if(lcv) lcv.height = sz - 30;
 }
+
 resizeWrap();
 window.addEventListener('resize', () => { resizeWrap(); render(); drawLegend(); });
 
@@ -1815,8 +792,17 @@ function currentOSC(){ return viewMode==='hypso' ? oscHypso : oscContour; }
 // LÉGENDE ALTITUDE
 // ════════════════════════════════════════════════════════════════
 function drawLegend() {
+  // Légende W/m² quand la vue insolation est affichée (dsm-insol.js)
+  if (typeof insolActive!=='undefined' && insolActive && insolImgData){
+    drawLegendInsol(); return;
+  }
   const lcv = document.getElementById('lcv');
   if(!lcv||!hypsoLUT||vmaxGlobal<=vminGlobal) return;
+  // Restaurer titre/unité altitude (basculés par drawLegendInsol)
+  const legT=document.querySelector('#legend-panel .leg-title');
+  const legU=document.querySelector('#legend-panel .leg-unit');
+  if(legT) legT.textContent='ALTITUDE';
+  if(legU) legU.textContent='mètres';
   const lh = lcv.height, lw = lcv.width;
   if(lh < 10) return;
   const lctx = lcv.getContext('2d');
@@ -1844,21 +830,52 @@ function drawLegend() {
   }
 }
 
+
+
+
 // ════════════════════════════════════════════════════════════════
 // RENDU
 // ════════════════════════════════════════════════════════════════
 function render() {
+  // Vue insolation active → repeindre la carte cachée (dsm-insol.js)
+  if (typeof insolActive!=='undefined' && insolActive && insolImgData){
+    insolRedessiner(); return;
+  }
   const osc=currentOSC(); if(!osc) return;
+  if(!ctrlPanneauOuvert){ ctrlPanneauOuvert=true; ctrlOuvrir();
+    document.getElementById('btn-glacier').disabled=false; }
   const sw=DISP*srcPPx, sh=DISP*srcPPx;
   srcX=Math.max(0,Math.min(imgW-sw,srcX));
   srcY=Math.max(0,Math.min(imgH-sh,srcY));
   ctx.clearRect(0,0,DISP,DISP);
-  ctx.drawImage(osc,srcX,srcY,sw,sh,0,0,DISP,DISP);
-  if(oscWater) ctx.drawImage(oscWater,srcX,srcY,sw,sh,0,0,DISP,DISP);
+  ctx.imageSmoothingEnabled=false;                 // données scientifiques : pas de lissage
+  const sX=Math.round(srcX), sY=Math.round(srcY), sW=Math.round(sw), sH=Math.round(sh);
+  ctx.drawImage(osc,sX,sY,sW,sH,0,0,DISP,DISP);
+  if(oscWater) ctx.drawImage(oscWater,sX,sY,sW,sH,0,0,DISP,DISP);
+
+  // ─── CALQUE DE PARTAGE : lignes fines → moyennage d'aire (sinon zigzag au dézoom) ───
+  if (partageActif && partageOsc) {
+    const rx = 1024 / imgW, ry = 1024 / imgH;
+    ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(partageOsc, srcX*rx, srcY*ry, sw*rx, sh*ry, 0, 0, DISP, DISP);
+    ctx.imageSmoothingEnabled = false;
+  }
+
+
+  // ─── CALQUE FIL DE FER : frontières des patches coagulés (diagnostic) ───
+  if (filActif && filOsc) {
+    const rx = 1024 / imgW, ry = 1024 / imgH;
+    ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(filOsc, srcX*rx, srcY*ry, sw*rx, sh*ry, 0, 0, DISP, DISP);
+    ctx.imageSmoothingEnabled = false;
+  }
+
   syncCarto();
   document.getElementById('vinfo').textContent=`zoom ×${(1/srcPPx).toFixed(2)}`;
   drawLegend();
 }
+
+
 
 swapBtn.addEventListener('click',()=>{
   if(!oscHypso||!oscContour) return;
@@ -1866,6 +883,976 @@ swapBtn.addEventListener('click',()=>{
   swapBtn.textContent=viewMode==='hypso'?'⇄ Courbes de niveau':'⇄ Hypsométrie';
   render();
 });
+
+
+
+
+// ════════════════════════════════════════════════════════════════
+// LIGNES DE PARTAGE DES EAUX (dsm-partage.js) — overlay noir sur ipso
+// ════════════════════════════════════════════════════════════════
+let partageOsc = null, partageActif = false;
+const btnPartage = document.getElementById('btn-partage');
+
+btnPartage.addEventListener('click', () => {
+  if (typeof ombreElev1024 === 'undefined' || !ombreElev1024) {
+    document.getElementById('vstatus').textContent = 'Partage : calcule l\'ombre d\'abord';
+    return;
+  }
+  
+  if (!partageOsc) {                        // calcul UNE seule fois par terrain
+    const divide = DSMPARTAGE.tracer(ombreElev1024);
+
+    // CORRECTION ICI : On force 1024 au lieu de OMBRE_DIM pour éviter l'effet miniature
+    partageOsc = new OffscreenCanvas(1024, 1024);
+    const pctx = partageOsc.getContext('2d');
+    const pimg = pctx.createImageData(1024, 1024);
+    DSMPARTAGE.dessiner(pimg, divide);
+    pctx.putImageData(pimg, 0, 0);
+
+    // Maillage — calculé une fois avec elevGrid + masque partage
+    if(typeof DSMMESH !== 'undefined') {
+      var _mesh = DSMMESH.construire(ombreElev1024, divide, ombreResY, 1);
+      var _s    = DSMMESH.stats(_mesh);
+      console.log('[MESH] sommets:', _s.sommets,
+                  '| triangles bruts:', _s.triangles,
+                  '| sur crête:', _s.surCrete,
+                  '| patches coagulés:', _s.patches,
+                  '| fusion:', _s.fusion);
+      window.dsmMesh = _mesh;
+    }
+    window.dsmPartage = divide;
+  }
+  
+  partageActif = !partageActif;
+  btnPartage.classList.toggle('active', partageActif);
+  render();
+});
+
+// ════════════════════════════════════════════════════════════════
+// FLUX — flèches de vitesse (sens de glissade) + contour extension max.
+// Couleur : bleu (lent) → rouge (rapide, échelle log). Taille ∝ vitesse.
+// Densité : 1 flèche max par cellule de 16 px (la plus rapide).
+// ════════════════════════════════════════════════════════════════
+let fluxOsc = null, fluxActif = false, fluxLogUne = false;
+const btnFlux = document.getElementById('btn-flux');
+
+function fluxDessiner() {
+  const F = window.dsmFilet;
+  if (!F || !F.vit) return;
+  if (!fluxOsc) fluxOsc = new OffscreenCanvas(1024, 1024);
+  const c = fluxOsc.getContext('2d');
+  c.clearRect(0, 0, 1024, 1024);
+  // Flèches : sous-échantillonnage 16 px, la plus rapide de chaque cellule
+  let vMax = 0;
+  for (let t = 0; t < F.nTri; t++) if (F.vit[t] > vMax) vMax = F.vit[t];
+  if (vMax <= 0) { if(fluxLogUne) console.log('[FLUX] vitesse max = 0 — glace trop mince'); fluxLogUne=false; return; }
+  if(fluxLogUne){ console.log('[FLUX] vitesse max = '+vMax.toFixed(3)+' m/an'); fluxLogUne=false; }
+  const best = new Int32Array(64 * 64).fill(-1);
+  for (let t = 0; t < F.nTri; t++) {
+    if (F.vit[t] < 0.01) continue;                      // seuil AFFICHAGE 1 cm/an (glace mince : mm/an, normal SIA)
+    const cx = (F.centIdx[t] % 1024) >> 4, cy = ((F.centIdx[t] / 1024) | 0) >> 4;
+    const k = cy * 64 + cx;
+    if (best[k] < 0 || F.vit[t] > F.vit[best[k]]) best[k] = t;
+  }
+  const lv = v => Math.log1p(v) / Math.log1p(vMax);     // 0..1 échelle log
+  for (let k = 0; k < best.length; k++) {
+    const t = best[k]; if (t < 0) continue;
+    const f = lv(F.vit[t]);
+    const x0 = F.centIdx[t] % 1024, y0 = (F.centIdx[t] / 1024) | 0;
+    const L = 5 + 14 * f;
+    const dx = F.vx[t] / F.vit[t], dy = F.vy[t] / F.vit[t];
+    const x1 = x0 + dx * L, y1 = y0 + dy * L;
+    // bleu #89b4fa (lent) → rouge #f38ba8 (rapide)
+    const r = Math.round(137 + f * 106), g = Math.round(180 - f * 41), b = Math.round(250 - f * 82);
+    c.strokeStyle = 'rgb(' + r + ',' + g + ',' + b + ')';
+    c.lineWidth = 1 + 1.5 * f;
+    c.beginPath(); c.moveTo(x0, y0); c.lineTo(x1, y1);
+    c.moveTo(x1, y1); c.lineTo(x1 - (dx - dy * 0.6) * L * 0.3, y1 - (dy + dx * 0.6) * L * 0.3);
+    c.moveTo(x1, y1); c.lineTo(x1 - (dx + dy * 0.6) * L * 0.3, y1 - (dy - dx * 0.6) * L * 0.3);
+    c.stroke();
+  }
+}
+
+btnFlux.addEventListener('click', () => {
+  if (!window.dsmFilet || !window.dsmFilet.vit) {
+    document.getElementById('vstatus').textContent = 'Flux : lance Glacier d\'abord';
+    return;
+  }
+  fluxLogUne = true;
+  fluxDessiner();
+  fluxActif = !fluxActif;
+  btnFlux.classList.toggle('active', fluxActif);
+  render();
+});
+
+// ════════════════════════════════════════════════════════════════
+// FIL DE FER — le FILET : frontières des triangles plaqués (diagnostic)
+// Orange = bord de triangle ; rouge sombre translucide = triangle zone
+// chaude (éliminé). Construit le filet à la volée si Glacier pas lancé.
+// ════════════════════════════════════════════════════════════════
+let filOsc = null, filActif = false;
+const btnFil = document.getElementById('btn-fil');
+
+btnFil.addEventListener('click', () => {
+  if (typeof ombreElev1024 === 'undefined' || !ombreElev1024) {
+    document.getElementById('vstatus').textContent = 'Fil : calcule l\'ombre d\'abord';
+    return;
+  }
+  if (!window.dsmFilet) {
+    if (!window.dsmPartage) window.dsmPartage = DSMPARTAGE.tracer(ombreElev1024);
+    // Filet diagnostic : zones chaudes triées si tempInstant dispo (sans foehn)
+    const orb0 = orbital(GLAC_EPOQUE_INIT), pibar0 = orb0.pib + Math.PI;
+    const lat0 = (GEO.latMax + GEO.latMin) / 2, lon0 = (GEO.lonMax + GEO.lonMin) / 2;
+    const rh0 = sunRiseSet(FILET_JOUR_CHAUD, orb0.e, orb0.eps, pibar0, lat0 * Math.PI / 180, lon0);
+    const r0 = rh0 ? rh0.rise : 6, s0 = rh0 ? rh0.set : 18;
+    window.dsmFilet = DSMFILET.construire(glacierElev1024(), window.dsmPartage, {
+      budget: FILET_BUDGET, scaleXY: ombreResY,
+      estChaud: function (idx) {
+        return tempInstant(idx, -1, FILET_JOUR_CHAUD, GLAC_EPOQUE_INIT, r0, s0, false) > 0;
+      }
+    });
+    const _fs = DSMFILET.stats(window.dsmFilet);
+    console.log('[FILET] triangles:', _fs.triangles, '| actifs (froids):', _fs.actifs,
+                '| mailles:', _fs.mailles, '| maille init:', _fs.mailleInit, '| σ moy:', _fs.sigmaMoy);
+  }
+  if (!filOsc) {
+    const F = window.dsmFilet, D = 1024, top = F.triOfPix;
+    filOsc = new OffscreenCanvas(D, D);
+    const fctx = filOsc.getContext('2d');
+    const img = fctx.createImageData(D, D), d = img.data;
+    for (let y = 0; y < D - 1; y++)
+      for (let x = 0; x < D - 1; x++) {
+        const i = y * D + x, ti = top[i];
+        if (ti < 0) continue;
+        const p = i << 2;
+        if (top[i] !== top[i + 1] || top[i] !== top[i + D]) {
+          d[p] = 250; d[p + 1] = 179; d[p + 2] = 135; d[p + 3] = 220;   // bord : orange
+        } else if (!F.actif[ti]) {
+          d[p] = 120; d[p + 1] = 30; d[p + 2] = 30; d[p + 3] = 60;      // zone chaude : rouge léger
+        }
+      }
+    fctx.putImageData(img, 0, 0);
+  }
+  filActif = !filActif;
+  btnFil.classList.toggle('active', filActif);
+  render();
+});
+
+// ════════════════════════════════════════════════════════════════
+// FIL DE FER 3D (dsm-fil3d.js) — le filet seul, rotations X/Y/Z
+// Réutilise le filet construit par le bouton Fil (même objet).
+// ════════════════════════════════════════════════════════════════
+const btnFil3d = document.getElementById('btn-fil3d');
+btnFil3d.addEventListener('click', () => {
+  if (!window.dsmFilet) {
+    document.getElementById('vstatus').textContent = '3D : affiche le Fil de fer d\'abord';
+    return;
+  }
+  DSMFIL3D.ouvrir(window.dsmFilet, glacierElev1024(), ombreResY);
+});
+
+
+
+
+// ════════════════════════════════════════════════════════════════
+// GLACIER — accumulation neige/glace (pile 1..8)
+// Pas élémentaire : 5 jours. 730 pas = 10 ans.
+// Sources : elevGrid (altitude), dsm-temp.js (température),
+//           dsm-astro.js (orbital, sunRiseSet), dsmMesh (cos θ).
+// ════════════════════════════════════════════════════════════════
+const GLAC_DIM      = 1024;
+const GLAC_N        = GLAC_DIM * GLAC_DIM;
+const GLAC_PAS_J    = 5;          // jours par pas
+const GLAC_ANS      = 10;         // durée accumulation
+const GLAC_NSTEPS   = Math.round(GLAC_ANS * 365 / GLAC_PAS_J);  // 730 (phase 1)
+const GLAC_EPOQUE_INIT = -20;     // ka — climat figé au LGM (phase 1 : accumulation sur place)
+// ── Phase 2 : cycle climatique complet LGM → présent (forçage accéléré) ──
+const GLAC_EPOQUE_FIN  = 0.026;   // ka — 2026 (convention : présent ≈ 0..+1)
+const GLAC_CYCLE_ANS   = Math.ceil((0.026 - (-20)) * 1000);  // TEMPS RÉEL : 20 026 années simulées
+const GLAC_KA_PAR_AN   = 0.001;   // TEMPS RÉEL : 1 an simulé = 1 an de climat (compression 200:1 SUPPRIMÉE)
+const GLAC_NSTEPS2     = GLAC_CYCLE_ANS * Math.round(365/GLAC_PAS_J);  // pas de la phase 2 (GLAC_NJOURS déclaré plus bas)
+const GLAC_NSTEPS_TOT  = GLAC_NSTEPS + GLAC_NSTEPS2;
+const GLAC_FOEHN_RECALC_KA = 5;   // recalcul foehn (capVent dépend de t_ka) tous les 5 ka
+const FLUX_PENTE_MODE = 'A';   // 'A' = centroïdes | 'B' = contact inter-triangles
+const GLAC_NJOURS   = Math.floor(360 / GLAC_PAS_J) + 1;        // 73 tranches de 5 j (jours 1,6,…,361)
+const GLAC_PRECIP   = 1500;       // mm/an précipitations de base ACTUELLES (versant neutre)
+const GLAC_PRECIP_CC = 0.045;     // /°C — précip × exp(CC·ΔT) : Clausius-Clapeyron tempérée
+                                  // (capacité vapeur ~7 %/°C, précip effective ~4-5 %/°C).
+                                  // Contrôle : ΔT=-13 °C (LGM) → ×0,56, dans les 50-70 % des
+                                  // reconstructions alpines. ΔT=0 → ×1 (présent).
+// ── ANCIENNES CONSTANTES FOEHN — retirées v3.62, remplacées par un calcul
+// physique (dsm-foehn.js : thermodynamique adiabatique + Smith & Barstad
+// 2004). Gardées en commentaire pour l'audit des constantes (traçabilité) :
+//   GLAC_FOEHN_VENT = 1.33     × précip versant AU VENT   (~2000 mm/an)
+//   GLAC_FOEHN_SOUS = 0.33     × précip versant SOUS LE VENT (~500 mm/an)
+//   GLAC_FOEHN_DT   = 5.0      °C réchauffement foehn, plat
+//   GLAC_FOEHN_GRAZE = 0.5     ° élévation rasante, seuil d'ombre pluvio
+// Voir dsm-foehn-cadrage.md pour les équations et sources qui remplacent
+// ces quatre valeurs inventées.
+const GLAC_DENS_NEIGE = 0.1;      // densité neige fraîche (affichage : épaisseur/w.e.)
+const GLAC_DENS_GLACE = 0.917;    // densité glace ρ=917 kg/m³ (unifiée — audit constantes)
+const GLAC_TAU_TASS   = 10.0;     // ans — constante de temps tassement neige→glace (exponentiel)
+const GLAC_K_TASS     = GLAC_PAS_J/365/GLAC_TAU_TASS;  // fraction convertie par pas (d/τ)
+const GLAC_DDF_NEIGE  = 0.00017;  // m w.e./(°C·h) ≈ 4 mm w.e./°C·j (PDD neige)
+const GLAC_DDF_GLACE  = 0.00033;  // m w.e./(°C·h) ≈ 8 mm w.e./°C·j (PDD glace)
+const GLAC_FONTE      = 1;        // 1 = fonte PDD active ; 0 = fonte DÉBRANCHÉE (test transport pur — dépôt et tassement conservés)
+// Réservoirs internes : TOUS en m ÉQUIVALENT EAU (w.e.), PAR TRIANGLE du filet.
+
+// ── Filet : budget de triangles à rebours des workers ──
+// budget = nWorkers × triangles/s/worker × délai cible (60 s/pas).
+// FILET_TRI_S est calibrable (coût réel par triangle mesuré à l'usage).
+const FILET_DELAI_S = 60;                                  // s par pas et par CPU
+const FILET_TRI_S   = 500;                                 // triangles/s/worker (mesuré : <1 s/pas à 16k tri)
+const FILET_WORKERS = (navigator.hardwareConcurrency || 4);
+const FILET_BUDGET  = Math.min(131072, FILET_WORKERS * FILET_TRI_S * FILET_DELAI_S);
+const FILET_JOUR_CHAUD = 60;                               // 1er mars : tri des zones chaudes
+
+let glacierFilet  = null;   // objet DSMFILET (géométrie facettes)
+let filetNeige    = null;   // Float32Array[nTri] neige (m w.e.) par triangle
+let filetGlace    = null;   // Float32Array[nTri] glace (m w.e.) par triangle
+
+let glacierOsc    = null;   // OffscreenCanvas overlay
+// (réservoirs pixel supprimés v3.35 — accumulation par triangle du filet)
+let glacierFoehnC = null;   // Float32Array[N] facteur précip foehn (1.33 vent / 0.33 sous-vent / 1 neutre)
+let glacierFoehnDT = null;  // Float32Array[N] réchauffement foehn °C (sous le vent)
+let glacierInsolCards = null; // Array[73] de Uint8Array[N] — insolation/jour normalisée 0..255
+let glacierInsolMax = 0;      // max global (heures·éq-zénith) correspondant à 255
+let glacierRunning = false;
+let glacierTimer   = null;
+let glacierStep    = 0;
+
+// ── Rééchantillonnage elevGrid → 1024×1024 (si ombreElev1024 absent) ──
+function glacierElev1024() {
+  if (ombreElev1024) return ombreElev1024;
+  var W=GLAC_DIM, H=GLAC_DIM, out=new Float32Array(GLAC_N);
+  var sx=imgW/W, sy=imgH/H;   // convention surface (alignée sur le composite render)
+  for(var rr=0;rr<H;rr++){
+    var fy=rr*sy, iy=Math.min(Math.floor(fy),imgH-2), ty=fy-iy;
+    for(var cc=0;cc<W;cc++){
+      var fx=cc*sx, ix=Math.min(Math.floor(fx),imgW-2), tx=fx-ix;
+      out[rr*W+cc]=
+        elevGrid[ iy   *imgW+ix  ]*(1-tx)*(1-ty)+
+        elevGrid[ iy   *imgW+ix+1]*   tx *(1-ty)+
+        elevGrid[(iy+1)*imgW+ix  ]*(1-tx)*   ty +
+        elevGrid[(iy+1)*imgW+ix+1]*   tx *   ty;
+    }
+  }
+  return out;
+}
+
+// ── Normale COAGULÉE par pixel (window.dsmPixNorm) ──
+// Pour chaque patch fusionné du maillage, moyenne des normales-GRADIENT (même
+// convention que le worker insol) des pixels du patch ; rabattue par pixel.
+// Tout pixel d'un même patch partage alors une seule pente/orientation.
+// Convention worker : nx=-dz/dx, ny=-dz/dnord, nz=1 (resX par ligne, resY scalaire).
+function dsmCalcPixNorm() {
+  var m = window.dsmMesh;
+  if (!m || !m.patch || typeof ombreElev1024==='undefined' || !ombreElev1024
+      || typeof ombreResX==='undefined' || !ombreResX) { window.dsmPixNorm=null; return; }
+  var D=GLAC_DIM, N=GLAC_N, e=ombreElev1024, rX=ombreResX, rY=ombreResY;
+  function gradN(x,y,out){
+    var i=y*D+x;
+    var zE=x<D-1?e[i+1]:e[i], zW=x>0?e[i-1]:e[i];
+    var dx=(x>0&&x<D-1)?(zE-zW)/(2*rX[y]):(zE-zW)/rX[y];
+    var zN=y>0?e[i-D]:e[i], zS=y<D-1?e[i+D]:e[i];
+    var dn=(y>0&&y<D-1)?(zN-zS)/(2*rY):(zN-zS)/rY;
+    var nx=-dx, ny=-dn, L=Math.sqrt(nx*nx+ny*ny+1);
+    out[0]=nx/L; out[1]=ny/L; out[2]=1/L;
+  }
+  var nP=m.nP, patch=m.patch, nT=m.nT, DM1=D-1;
+  var pAcc=new Float32Array(nP*3), g=new Float32Array(3);
+  // 1. accumuler la normale-gradient de chaque cellule dans son patch
+  for(var cell=0; cell*2<nT; cell++){
+    var p=patch[cell*2]*3, cx=cell%DM1, cy=(cell/DM1)|0;
+    gradN(cx,cy,g); pAcc[p]+=g[0]; pAcc[p+1]+=g[1]; pAcc[p+2]+=g[2];
+  }
+  // 2. normaliser chaque patch
+  for(var q=0;q<nP;q++){ var o=q*3, L=Math.sqrt(pAcc[o]*pAcc[o]+pAcc[o+1]*pAcc[o+1]+pAcc[o+2]*pAcc[o+2])||1;
+    pAcc[o]/=L; pAcc[o+1]/=L; pAcc[o+2]/=L; }
+  // 3. rabattre par pixel = normale du patch de sa cellule
+  var pn=new Float32Array(N*3);
+  for(var cell2=0; cell2*2<nT; cell2++){
+    var p2=patch[cell2*2]*3, cx2=cell2%DM1, cy2=(cell2/DM1)|0, vi=(cy2*D+cx2)*3;
+    pn[vi]=pAcc[p2]; pn[vi+1]=pAcc[p2+1]; pn[vi+2]=pAcc[p2+2];
+  }
+  // 4. pixels sans cellule (dernière ligne/colonne) : gradient direct
+  for(var i2=0;i2<N;i2++){ var b=i2*3;
+    if(pn[b]===0&&pn[b+1]===0&&pn[b+2]===0){ gradN(i2%D,(i2/D)|0,g); pn[b]=g[0];pn[b+1]=g[1];pn[b+2]=g[2]; } }
+  window.dsmPixNorm=pn;
+  console.log('[GLACIER] normales coagulées prêtes — '+nP+' patches');
+}
+
+// ── cos(θ) par pixel — projection horizontale de la normale ──
+function glacierCalcCosTheta(elev1024) {
+  var ct=new Float32Array(GLAC_N), D=GLAC_DIM;
+  if(window.dsmPixNorm){                       // normale coagulée (patch) — préférée
+    var pn=window.dsmPixNorm;
+    for(var i=0;i<GLAC_N;i++) ct[i]=Math.abs(pn[i*3+2]);
+  } else if(window.dsmMesh && window.dsmMesh.normals) {
+    var nz=window.dsmMesh.normals, tris=window.dsmMesh.tris, nT=window.dsmMesh.nT;
+    var cnt=new Uint8Array(GLAC_N);
+    for(var t=0;t<nT;t++){
+      var v=Math.abs(nz[t*3+2]);
+      var a=tris[t*3],b=tris[t*3+1],cc2=tris[t*3+2];
+      ct[a]+=v;cnt[a]++; ct[b]+=v;cnt[b]++; ct[cc2]+=v;cnt[cc2]++;
+    }
+    for(var i=0;i<GLAC_N;i++) ct[i]=cnt[i]?ct[i]/cnt[i]:0;
+  } else {
+    for(var y=0;y<D;y++) for(var x=0;x<D;x++){
+      var i=y*D+x;
+      var xm=x>0?elev1024[i-1]:elev1024[i], xp=x<D-1?elev1024[i+1]:elev1024[i];
+      var ym=y>0?elev1024[i-D]:elev1024[i], yp=y<D-1?elev1024[i+D]:elev1024[i];
+      var dzdx=(xp-xm)/20, dzdy=(yp-ym)/20;
+      ct[i]=1/Math.sqrt(1+dzdx*dzdx+dzdy*dzdy);
+    }
+  }
+  return ct;
+}
+
+// ── Cap du vent dominant selon latitude et époque ──
+// Présent : 270° (ouest) partout. LGM : 225° (SO) dans la bande ±45°,
+// puis retour progressif à l'ouest au-delà (fondu jusqu'au pôle).
+// Force du régime g = anomalie polaire normalisée (0 présent → 1 LGM).
+// PLUS APPELÉE depuis v3.62 — glacierCalcFoehn utilise désormais
+// DsmFoehn.foehnWindDirection(t_ka) (270° présent → 202,5° SSO au LGM,
+// valeurs données par l'utilisateur pour le nouveau module). Modèle
+// différent de celui-ci (270°→225° SO, pondéré latitude+anomalie
+// polaire) : gardée pour référence/audit, à supprimer si confirmé inutile
+// ailleurs.
+function capVent(latDeg, t_ka) {
+  var aLGM = anomaliePaleo(-20, 70);                 // référence pleine (≈ -20)
+  var g    = aLGM ? anomaliePaleo(t_ka, 70) / aLGM : 0;   // 0 présent → 1 LGM
+  if(g<0) g=0; if(g>1) g=1;
+  var la = Math.abs(latDeg);
+  var w  = la <= 45 ? 1 : Math.max(0, (90 - la) / 45);    // 1 sous 45°, →0 au pôle
+  return 270 - 45 * g * w;                                // 270 présent → 225 LGM tropical
+}
+
+// ── Foehn par pixel — calcul physique (dsm-foehn.js) ──
+// Remplace l'ancien test binaire par azimut (GLAC_FOEHN_GRAZE) par :
+//   fC  : précipitation orographique Smith & Barstad (2004), continue
+//   fDT : réchauffement adiabatique réel (Γ_sec−Γ_humide)×Δz_saturé
+// Température utilisée pour Γ_humide et le LCL : profil annuel moyen
+// T(z) = TEMP_T0_MER + anomaliePaleo(t_ka,lat) − TEMP_LAPSE·z/1000, cohérent
+// avec le pas de recalcul du foehn (5 ka) — pas la diurne instantanée,
+// qui reste ajoutée séparément dans glacierAccumPas (C = tempInstant(...)+fDT).
+// Pas de fallback : si l'horizon n'est pas prêt, DSMFOEHN n'en a pas besoin
+// (recherche de crête directe sur ombreElev1024), mais on garde le garde-fou
+// existant car le reste de l'init en dépend.
+function glacierCalcFoehn(t_ka) {
+  if(!ombreHorizonCopy)
+    throw new Error('Foehn impossible : horizon non calculé — lancer l\'étape Ombre avant Glacier.');
+  var lat = (GEO.latMax + GEO.latMin) / 2;
+  var tempFn = function(idx) {
+    return TEMP_T0_MER + anomaliePaleo(t_ka, lat) - TEMP_LAPSE * ombreElev1024[idx] / 1000;
+  };
+  var out = DsmFoehn.foehnCalc(t_ka, ombreElev1024, ombreResY, lat, tempFn);
+  glacierFoehnDT = out.foehnDT;
+  return out.foehnC;
+}
+
+// ── Pas d'accumulation (5 jours) — PAR TRIANGLE du filet ──
+// jour : jour julien 1-365 du milieu du pas ; t_ka : époque en ka.
+// Chaque triangle actif : T au centroïde (tempInstant sur le pixel centroïde),
+// cos θ = normale du triangle, foehn/insolation échantillonnés au centroïde.
+function glacierAccumPas(elev1024, jour, t_ka) {
+  var orb   = orbital(t_ka);
+  var pibar = orb.pib + Math.PI;
+  var lat   = (GEO.latMax+GEO.latMin)/2;
+  var lon   = (GEO.lonMax+GEO.lonMin)/2;
+  var rh    = sunRiseSet(jour, orb.e, orb.eps, pibar, lat*Math.PI/180, lon);
+  var rise  = rh&&rh.rise>=0 ? rh.rise : 12, setH = rh&&rh.rise>=0 ? rh.set : 12;
+  var L     = Math.max(0, setH-rise);              // durée du jour (h)
+
+  var precJour=(GLAC_PRECIP/1000)*GLAC_PAS_J/365
+               *Math.exp(GLAC_PRECIP_CC*anomaliePaleo(t_ka,(GEO.latMax+GEO.latMin)/2));  // m eau/pas × facteur paléo (C-C)
+  var slice = Math.min(GLAC_NJOURS-1, Math.floor((jour-1)/GLAC_PAS_J));
+  var card  = glacierInsolCards[slice];
+
+  var F = glacierFilet;
+  for(var t=0; t<F.nTri; t++) {
+    if(!F.actif[t] && filetGlace[t]<=0 && filetNeige[t]<=0) continue;
+    var ic = F.centIdx[t];
+    var fDT = glacierFoehnDT[ic];
+    // T constante hors diurne (nuit comprise) + amplitude diurne
+    var C = tempInstant(ic, -1, jour, t_ka, rise, setH, false) + fDT;
+    var b = TEMP_A_DIURNE * (card[ic]/255);
+
+    // PDD analytique 24 h (°C·h) — primitive exacte du sinus tronqué :
+    //   nuit (24−L) : max(0,C)·(24−L)
+    //   jour : L·[ C≥0 → C + 2b/π ; C+b≤0 → 0 ; sinon C(1−2φ1)+ (2b/π)cosπφ1, φ1=asin(−C/b)/π ]
+    var degH = (C>0 ? C*(24-L) : 0);
+    if (L>0 && b>0) {
+      if (C>=0)          degH += (C + 2*b/Math.PI) * L;
+      else if (C+b>0) {
+        var f1 = Math.asin(-C/b)/Math.PI;
+        degH += (C*(1-2*f1) + (2*b/Math.PI)*Math.cos(Math.PI*f1)) * L;
+      }
+    } else if (L>0 && C>0) degH += C*L;
+
+    // 1. Dépôt (m w.e.) : fraction neige sur T nocturne = C
+    var precEff = precJour * F.cosT[t] * glacierFoehnC[ic];
+    var fSnow = C <= 0 ? 1 : (C < 2 ? (2-C)/2 : 0);
+    filetNeige[t] += precEff * fSnow;
+
+    // 2. Fonte PDD : degrés-heures/jour × 5 j (GLAC_FONTE=0 : débranchée)
+    var dh = degH * GLAC_PAS_J;
+    if(dh > 0 && GLAC_FONTE) {
+      var fN = dh * GLAC_DDF_NEIGE;
+      if(fN <= filetNeige[t]) {
+        filetNeige[t] -= fN;
+      } else {
+        var dhReste = (fN - filetNeige[t]) / GLAC_DDF_NEIGE;
+        filetNeige[t] = 0;
+        filetGlace[t] = Math.max(0, filetGlace[t] - dhReste * GLAC_DDF_GLACE);
+      }
+    }
+
+    // 3. Tassement continu neige → glace (exponentiel τ=10 ans), 1:1 en w.e.
+    if(filetNeige[t] > 0) {
+      var conv = filetNeige[t] * GLAC_K_TASS;
+      filetNeige[t] -= conv;
+      filetGlace[t] += conv;
+    }
+  }
+}
+
+// ── 8. Affichage déciles cyan(neige)/bleu(glace) ──
+function glacierDessiner(elev1024) {
+  if(!glacierOsc) glacierOsc=new OffscreenCanvas(GLAC_DIM,GLAC_DIM);
+  var ctx2=glacierOsc.getContext('2d');
+  var imgd=ctx2.createImageData(GLAC_DIM,GLAC_DIM);
+  var d=imgd.data;
+  var F=glacierFilet, top=F.triOfPix;
+
+  // Déciles sur les TRIANGLES couverts (épaisseur totale)
+  var vals=[];
+  for(var t=0;t<F.nTri;t++){
+    if(!F.actif[t]) continue;
+    var tot=filetNeige[t]/GLAC_DENS_NEIGE+filetGlace[t]/GLAC_DENS_GLACE;
+    if(tot>0.01) vals.push(tot);
+  }
+  vals.sort(function(a,b){return a-b;});
+  var nv=vals.length;
+  var deciles=new Float32Array(11);
+  for(var d2=0;d2<=10;d2++) deciles[d2]=nv>0?vals[Math.min(nv-1,Math.round(d2/10*(nv-1)))]:0;
+
+  // Peinture par pixel via lookup triOfPix
+  for(var i=0;i<GLAC_N;i++){
+    var ti=top[i];
+    if(ti<0||!F.actif[ti]) continue;
+    var neige=filetNeige[ti]/GLAC_DENS_NEIGE, glace=filetGlace[ti]/GLAC_DENS_GLACE, total=neige+glace;
+    if(total<0.01) continue;
+    var dec=0;
+    for(var k=1;k<=10;k++) if(total>=deciles[k]) dec=k;
+    var tt=dec/10;   // 0=fin, 1=épais
+    var p=i<<2;
+    if(filetGlace[ti]>filetNeige[ti]){   // décision en w.e.
+      d[p]  =0;
+      d[p+1]=Math.round(20+tt*100);
+      d[p+2]=Math.round(120+tt*135);
+    } else {
+      d[p]  =Math.round(100-tt*100);
+      d[p+1]=Math.round(200+tt*55);
+      d[p+2]=255;
+    }
+    d[p+3]=Math.round(150+tt*105);
+  }
+  ctx2.putImageData(imgd,0,0);
+  // Ligne de front extension max — TOUJOURS visible, rouge net 3 px
+  if(window._glacExtMax){
+    var ext=window._glacExtMax, W=GLAC_DIM;
+    var m=new Uint8Array(W*W);
+    for(var i2=0;i2<W*W;i2++){ var ti2=top[i2]; if(ti2>=0&&ext[ti2]) m[i2]=1; }
+    ctx2.fillStyle='#ff0000';
+    for(var y2=1;y2<W-1;y2++)
+      for(var x2=1;x2<W-1;x2++){
+        var i3=y2*W+x2;
+        if(!m[i3]) continue;
+        if(!m[i3-1]||!m[i3+1]||!m[i3-W]||!m[i3+W]) ctx2.fillRect(x2,y2,1,1);
+      }
+  }
+  render();
+}
+
+// ── Boucle asynchrone par requestAnimationFrame ──
+// Climat FIGÉ au LGM (phase 1 init) : t_ka constant, insolation déjà précalculée
+// (73 cartes). La boucle ne fait QUE consommer les caches — aucun worker relancé.
+// ── Stats par triangle : % surface couverte, moyennes pondérées surface, max ──
+function glacierStats() {
+  var F=glacierFilet, sCov=0, sTot=0, sN=0, sG=0, mxG=0;
+  for(var t=0;t<F.nTri;t++){
+    if(!F.actif[t]) continue;
+    var a=F.surf[t]; sTot+=a;
+    var w=filetNeige[t]+filetGlace[t];
+    if(w>0.001){ sCov+=a; sN+=filetNeige[t]*a; sG+=filetGlace[t]*a; if(filetGlace[t]>mxG) mxG=filetGlace[t]; }
+  }
+  var kmCur=0, kmMax=0;
+  for(var t2=0;t2<F.nTri;t2++){
+    if(filetGlace[t2]>1) kmCur+=F.surf[t2];      // front : glace ≥ 1 m w.e. (le film de tassement < 1 m n’est pas un glacier)
+    if(window._glacExtMax && window._glacExtMax[t2]) kmMax+=F.surf[t2];
+  }
+  return { pcCov:(sTot?100*sCov/sTot:0).toFixed(1),
+           mN: sCov?(sN/sCov/GLAC_DENS_NEIGE):0,
+           mG: sCov?(sG/sCov/GLAC_DENS_GLACE):0,
+           mxG: mxG/GLAC_DENS_GLACE,
+           kmCur: kmCur/1e6, kmMax: kmMax/1e6 };   // km² glaciés (actuel, extension max)
+}
+
+// ── BILAN DE MASSE / ELA (v3.58) : table annuelle par tranches de 100 m ──
+// Affiche accumulation, fonte et bilan net (m w.e./an, moyennes surfaciques)
+// du cumul en cours, puis l'ELA du modèle : passage à zéro du bilan net
+// (interpolation linéaire entre les deux tranches qui encadrent le zéro).
+// Appelable à tout moment en console : bilanELA()
+window.bilanELA = function () {
+  if (!window._elaPos) { console.log('bilanELA : lancer Glacier d\'abord'); return; }
+  var anB = Math.floor(glacierStep * GLAC_PAS_J / 365);
+  console.log('[ELA] bilan de masse — année simulée ' + anB +
+              ' (cible LGM : ELA 1000–1400 m)');
+  console.log('  tranche      | accum. | fonte  | net (m w.e./an)');
+  var zN = [], bN = [];
+  for (var b = 59; b >= 0; b--) {
+    var A = window._elaAire[b]; if (A <= 0) continue;
+    var acc = window._elaPos[b] / A, abl = window._elaNeg[b] / A;
+    var net = acc - abl;
+    zN.push(b * 100 + 50); bN.push(net);
+    console.log('  ' + (b * 100) + '\u2013' + (b * 100 + 100) + ' m | ' +
+      acc.toFixed(2).padStart(6) + ' | ' + abl.toFixed(2).padStart(6) + ' | ' +
+      (net >= 0 ? '+' : '') + net.toFixed(2));
+  }
+  // ELA : premier passage + → − en descendant (zN est trié décroissant)
+  var ela = null;
+  for (var i = 0; i < zN.length - 1; i++)
+    if (bN[i] > 0 && bN[i + 1] <= 0) {
+      ela = zN[i + 1] + 100 * bN[i + 1] / (bN[i + 1] - bN[i]); break;
+    }
+  if (ela !== null) console.log('[ELA] modèle \u2248 ' + Math.round(ela) +
+    ' m — écart cible : ' + Math.round(ela - 1400) + ' m au-dessus de 1400 m');
+  else if (bN.length && bN[0] <= 0) console.log('[ELA] modèle : bilan négatif ' +
+    'jusqu\'aux sommets — ELA au-dessus du relief');
+  else console.log('[ELA] modèle : pas de passage à zéro (bilan positif partout ?)');
+};
+
+// ── Tables par triangle pour le pool (échantillonnage aux centroïdes) ──
+function glacierTablesWsun(){
+  var F=glacierFilet, n=F.nTri, w=new Uint8Array(GLAC_NJOURS*n);
+  for(var sl=0; sl<GLAC_NJOURS; sl++){
+    var c=glacierInsolCards[sl], o=sl*n;
+    for(var t=0;t<n;t++) w[o+t]=c[F.centIdx[t]];
+  }
+  return w;
+}
+function glacierPoolInit(){
+  var F=glacierFilet, n=F.nTri;
+  var z=new Float32Array(n), fC=new Float32Array(n), fDT=new Float32Array(n);
+  for(var t=0;t<n;t++){ var ic=F.centIdx[t];
+    z[t]=ombreElev1024[ic]; fC[t]=glacierFoehnC[ic]; fDT[t]=glacierFoehnDT[ic]; }
+  return GLACPOOL.init(n, { z:z, fDT:fDT, fC:fC, cosT:F.cosT, actif:F.actif,
+    wSun73:glacierTablesWsun(),
+    K:{ lapse:TEMP_LAPSE, aDiurne:TEMP_A_DIURNE, pasJ:GLAC_PAS_J,
+        ddfN:GLAC_DDF_NEIGE, ddfG:GLAC_DDF_GLACE, kTass:GLAC_K_TASS, fonte:GLAC_FONTE } });
+}
+function glacierPoolFoehn(){
+  var F=glacierFilet, n=F.nTri, fC=new Float32Array(n), fDT=new Float32Array(n);
+  for(var t=0;t<n;t++){ var ic=F.centIdx[t]; fC[t]=glacierFoehnC[ic]; fDT[t]=glacierFoehnDT[ic]; }
+  return GLACPOOL.majFoehn(fC, fDT);
+}
+
+function glacierLoop(elev1024) {
+  if(!glacierRunning){ console.log('[GLACIER] boucle arrêtée'); return; }
+  if(glacierStep>=GLAC_NSTEPS_TOT){
+    glacierRunning=false;
+    var st=glacierStats();
+    var _dt=((performance.now()-window._glacT0)/1000).toFixed(1);
+    var msg='❄️ TERMINÉ '+GLAC_NSTEPS_TOT+' pas (10 ans LGM + '+GLAC_CYCLE_ANS+' cycles → 2026) en '+_dt+' s ('+
+            (window._glacTAccum/GLAC_NSTEPS_TOT).toFixed(0)+' ms/pas calcul) | couvert '+st.pcCov+'% | moy neige '
+            +st.mN.toFixed(1)+'m | moy glace '+st.mG.toFixed(2)+'m | max glace '+st.mxG.toFixed(1)+'m | ext '+st.kmCur.toFixed(1)+'/'+st.kmMax.toFixed(1)+' km²';
+    document.getElementById('vstatus').textContent=msg;
+    document.getElementById('btn-glacier').textContent='❄️ Glacier';
+    document.getElementById('btn-glacier').classList.remove('active');
+    console.log('[GLACIER] FIN BOUCLE —',msg);
+    glacierDessiner(elev1024); if(fluxActif) fluxDessiner();
+    return;
+  }
+  var jour=((glacierStep*GLAC_PAS_J)%365)+1;
+  // Phase 1 : climat figé LGM. Phase 2 : t_ka balaye LGM → 2026.
+  var t_ka;
+  if(glacierStep < GLAC_NSTEPS) t_ka = GLAC_EPOQUE_INIT;
+  else t_ka = GLAC_EPOQUE_INIT + ((glacierStep-GLAC_NSTEPS)/GLAC_NJOURS)*GLAC_KA_PAR_AN;
+  deltaCmarqueur(t_ka);   // point rouge : position temporelle sur la courbe ΔT
+  // Insolation : précession — recalcul des 73 cartes tous les 1 ka (pause boucle)
+  if(glacierStep >= GLAC_NSTEPS){
+    var _insBin = Math.floor(t_ka - GLAC_EPOQUE_INIT);
+    if(window._glacInsBin === undefined) window._glacInsBin = 0;
+    if(_insBin !== window._glacInsBin){
+      window._glacInsBin = _insBin;
+      console.log('[GLACIER] recalcul insolation (précession) à t_ka='+t_ka.toFixed(2));
+      var _st=glacierStep;
+      glacierPrechargeInsol(t_ka)
+        .then(function(){ return GLACPOOL.majSoleil(glacierTablesWsun()); })
+        .then(function(){
+          if(glacierRunning) requestAnimationFrame(function(){ glacierLoop(elev1024); });
+        });
+      glacierStep=_st;  // la boucle reprendra au même pas après le rechargement
+      return;           // pause : pas de pas pendant le recalcul
+    }
+  }
+  // Foehn : capVent(lat, t_ka) évolue — recalcul tous les GLAC_FOEHN_RECALC_KA ka
+  if(glacierStep >= GLAC_NSTEPS){
+    var _kaBin = Math.floor((t_ka - GLAC_EPOQUE_INIT) / GLAC_FOEHN_RECALC_KA);
+    if(window._glacFoehnBin === undefined) window._glacFoehnBin = 0;
+    if(_kaBin !== window._glacFoehnBin){
+      window._glacFoehnBin = _kaBin;
+      console.log('[GLACIER] recalcul foehn à t_ka='+t_ka.toFixed(1));
+      glacierFoehnC = glacierCalcFoehn(t_ka);
+      glacierPoolFoehn();
+    }
+  }
+  if(glacierStep===0){
+    window._glacT0=performance.now(); window._glacTAccum=0;
+    console.log('[GLACIER] DÉBUT — climat figé t_ka='+t_ka+' | '+GLAC_NSTEPS+' pas de '+GLAC_PAS_J+'j ('+GLAC_ANS+' ans)');
+  }
+
+  var _tp=performance.now();
+  // Scalaires du pas (le pool fait le par-triangle ; physique identique)
+  var orbP=orbital(t_ka), pibarP=orbP.pib+Math.PI;
+  var latP=(GEO.latMax+GEO.latMin)/2, lonP=(GEO.lonMax+GEO.lonMin)/2;
+  var rhP=sunRiseSet(jour, orbP.e, orbP.eps, pibarP, latP*Math.PI/180, lonP);
+  var riseP=rhP&&rhP.rise>=0?rhP.rise:12, setP=rhP&&rhP.rise>=0?rhP.set:12;
+  var scal={ tMer:TEMP_T0_MER+anomaliePaleo(t_ka,latP), 
+             tSaison:TEMP_A_SAISON*Math.cos(2*Math.PI*(jour-TEMP_JOUR_ETE)/365),
+             L:Math.max(0,setP-riseP),
+             precJour:(GLAC_PRECIP/1000)*GLAC_PAS_J/365*Math.exp(GLAC_PRECIP_CC*anomaliePaleo(t_ka,latP)),
+             slice:Math.min(GLAC_NJOURS-1,Math.floor((jour-1)/GLAC_PAS_J)) };
+  // ── BILAN DE MASSE / ELA (v3.58) : photo de (neige+glace) AVANT le pas
+  // climatique — la différence après GLACPOOL.pas est le bilan du pas
+  // (précipitation − fonte), le transport du flux n'y entre pas.
+  if (!window._elaAvant) {
+    var _nT0 = glacierFilet.nTri;
+    window._elaAvant = new Float32Array(_nT0);
+    window._elaBand  = new Int16Array(_nT0);          // tranche de 100 m par triangle
+    window._elaAire  = new Float64Array(60);          // aire par tranche (m², statique)
+    for (var _e0 = 0; _e0 < _nT0; _e0++) {
+      var _b0 = Math.max(0, Math.min(59, glacierFilet.centZ[_e0] / 100 | 0));
+      window._elaBand[_e0] = _b0;
+      window._elaAire[_b0] += glacierFilet.surf[_e0];
+    }
+    window._elaPos = new Float64Array(60);            // accumulation de l'année (m³ w.e.)
+    window._elaNeg = new Float64Array(60);            // fonte de l'année (m³ w.e.)
+  }
+  for (var _e1 = 0; _e1 < glacierFilet.nTri; _e1++)
+    window._elaAvant[_e1] = filetNeige[_e1] + filetGlace[_e1];
+GLACPOOL.pas(scal, filetNeige, filetGlace).then(function(){
+  // ── BILAN DE MASSE / ELA : différence du pas, cumul annuel par tranche ──
+  for (var _e2 = 0; _e2 < glacierFilet.nTri; _e2++) {
+    var _d = filetNeige[_e2] + filetGlace[_e2] - window._elaAvant[_e2];
+    if (_d > 0) window._elaPos[window._elaBand[_e2]] += _d * glacierFilet.surf[_e2];
+    else if (_d < 0) window._elaNeg[window._elaBand[_e2]] -= _d * glacierFilet.surf[_e2];
+  }
+  if (glacierStep % GLAC_NJOURS === GLAC_NJOURS - 1) {       // année bouclée
+    var _anB = Math.floor(glacierStep * GLAC_PAS_J / 365);
+    if (_anB < 10 || _anB % 50 === 0) window.bilanELA();
+    window._elaPos.fill(0); window._elaNeg.fill(0);
+  }
+// Écoulement : fil principal (transferts inter-triangles)
+  var _fluxPrep = window._glacAdj ? Promise.resolve() : (function(){
+  
+window._glacAdj = DSMFLUX.adjacence(glacierFilet, ombreResY, FLUX_PENTE_MODE);
+
+  return FLUXWORKER.init(glacierFilet, window._glacAdj);
+  })();
+  var _vAv=0; for(var _q=0;_q<glacierFilet.nTri;_q++) _vAv+=filetGlace[_q]*glacierFilet.surf[_q];
+  _fluxPrep.then(function(){ return FLUXWORKER.pas(glacierFilet, filetGlace, GLAC_PAS_J); }).then(function(){
+  var _vAp=0,_dep=0;
+  for(var _q2=0;_q2<glacierFilet.nTri;_q2++){ _vAp+=filetGlace[_q2]*glacierFilet.surf[_q2];
+    _dep+=Math.abs(glacierFilet.vit[_q2])>0?1:0; }
+  window._glacVolDep=(window._glacVolDep||0); window._glacVolErr=_vAp-_vAv; window._glacNbFlux=_dep;
+  // Extension maxi : masque des triangles ayant porté de la glace
+  if(!window._glacExtMax) window._glacExtMax = new Uint8Array(glacierFilet.nTri);
+  for(var _t=0;_t<glacierFilet.nTri;_t++) if(filetGlace[_t]>1) window._glacExtMax[_t]=1;
+
+  window._glacTAccum+=performance.now()-_tp;
+
+  if(glacierStep%(GLAC_NJOURS*50)===0){   // affichage tous les 50 ans simulés
+    var st=glacierStats();
+    var anSim=Math.floor(glacierStep*GLAC_PAS_J/365);
+    
+var phase = (glacierStep<GLAC_NSTEPS ? 'LGM' : 't_ka '+t_ka.toFixed(2))+
+                ' | iso0 '+Math.round((TEMP_T0_MER+anomaliePaleo(t_ka,latP))*1000/TEMP_LAPSE)+'m';
+
+var msg='[GLACIER] pas '+glacierStep+'/'+GLAC_NSTEPS_TOT+' ('+phase+
+            ') | ext '+st.kmCur.toFixed(1)+'/'+st.kmMax.toFixed(1)+' km² | flux '+(window._glacNbFlux||0)+' tri | ΔV '+((window._glacVolErr||0)/1e6).toFixed(2)+' Mm³ | moy neige '+st.mN.toFixed(1)+
+            'm | moy glace '+st.mG.toFixed(2)+'m | max glace '+st.mxG.toFixed(1)+'m | '+
+            (window._glacTAccum/(glacierStep+1)).toFixed(0)+' ms/pas';
+    console.log(msg);
+    if(DSMFLUX.sonde) console.log('[SONDE]', JSON.stringify(DSMFLUX.sonde.top), 'nég:', DSMFLUX.sonde.neg);
+    document.getElementById('vstatus').textContent='❄️ '+phase+
+      ' | ext '+st.kmCur.toFixed(1)+'/'+st.kmMax.toFixed(1)+' km² | glace '+st.mG.toFixed(2)+'m';
+    glacierDessiner(elev1024); if(fluxActif) fluxDessiner();
+  }
+  glacierStep++;
+  glacierLoop(elev1024);           // enchaînement direct
+  });  // fin FLUXWORKER.pas.then
+  });  // fin GLACPOOL.pas.then
+}
+
+// ── Init et démarrage ──
+function glacierInit() {
+  console.log('[GLACIER] glacierInit() — elevGrid='+!!elevGrid+' GEO='+!!GEO+' ombreHorizonCopy='+!!ombreHorizonCopy);
+  if(!elevGrid||!GEO){
+    console.error('[GLACIER] STOP — pas de tuile chargée');
+    document.getElementById('vstatus').textContent='❄️ Charger une tuile d\'abord'; return;
+  }
+  // Reset caches inter-runs (BUG : adjacence de l'ancien filet → téléportation de masse)
+  window._glacAdj=null; window._glacExtMax=null;
+  window._glacInsBin=undefined; window._glacFoehnBin=undefined;
+  console.log('[GLACIER] rééchantillonnage elev1024…');
+  var elev1024=glacierElev1024();
+  glacierStep  =0;
+  glacierRunning=true;
+
+  // Étapes exigeant les horizons : partage→filet→foehn→cartes→boucle.
+  function _demarrer(){
+    try {
+      // Ligne de partage (pour la coupe des mailles sur crête)
+      if(!window.dsmPartage){
+        if(typeof DSMPARTAGE==='undefined')
+          throw new Error('Partage indisponible');
+        console.log('[GLACIER] partage des eaux…');
+        window.dsmPartage=DSMPARTAGE.tracer(ombreElev1024);
+      }
+      // Foehn AVANT le filet (échantillonné aux centroïdes ensuite)
+      glacierFoehnC = glacierCalcFoehn(GLAC_EPOQUE_INIT);
+      // FILET : réutilisé si déjà construit (bouton Fil), sinon budget à rebours des workers
+      if(window.dsmFilet){
+        console.log('[GLACIER] filet existant réutilisé ('+window.dsmFilet.nTri+' triangles)');
+        glacierFilet = window.dsmFilet;
+      } else {
+      console.log('[GLACIER] filet — budget '+FILET_BUDGET+' triangles ('+FILET_WORKERS+' workers × '+
+                  FILET_TRI_S+' tri/s × '+FILET_DELAI_S+' s)…');
+      var orb0=orbital(GLAC_EPOQUE_INIT), pibar0=orb0.pib+Math.PI;
+      var lat0=(GEO.latMax+GEO.latMin)/2, lon0=(GEO.lonMax+GEO.lonMin)/2;
+      var rh0=sunRiseSet(FILET_JOUR_CHAUD, orb0.e, orb0.eps, pibar0, lat0*Math.PI/180, lon0);
+      var r0=rh0?rh0.rise:6, s0=rh0?rh0.set:18;
+      glacierFilet = DSMFILET.construire(elev1024, window.dsmPartage, {
+        budget: FILET_BUDGET, scaleXY: ombreResY,
+        estChaud: function(idx, zc){
+          // T moyenne (sans diurne) au 1er mars, époque initiale, foehn inclus
+          return tempInstant(idx, -1, FILET_JOUR_CHAUD, GLAC_EPOQUE_INIT, r0, s0, false)
+                 + glacierFoehnDT[idx] > 0;
+        }
+      });
+      var _fs=DSMFILET.stats(glacierFilet);
+      console.log('[FILET] triangles:', _fs.triangles, '| actifs (froids):', _fs.actifs,
+                  '| mailles:', _fs.mailles, '| maille init:', _fs.mailleInit,
+                  '| σ moy:', _fs.sigmaMoy);
+      window.dsmFilet = glacierFilet;   // pour le bouton Fil
+      }
+      filetNeige = new Float32Array(glacierFilet.nTri);
+      filetGlace = new Float32Array(glacierFilet.nTri);
+    } catch(e){
+      console.error('[GLACIER] STOP —', e.message);
+      document.getElementById('vstatus').textContent='❄️ '+e.message;
+      glacierRunning=false; return;
+    }
+    document.getElementById('vstatus').textContent='❄️ Précalcul des 73 cartes d\'insolation (LGM)…';
+    glacierPrechargeInsol(GLAC_EPOQUE_INIT).then(function(){
+      if(!glacierRunning) return;
+      glacierStep=0;
+      console.log('[GLACIER] 73 cartes prêtes → init pool ('+GLACPOOL.NW+' workers)');
+      glacierPoolInit().then(function(){
+        console.log('[GLACIER] pool prêt → démarrage boucle');
+        requestAnimationFrame(function(){glacierLoop(elev1024);});
+      });
+    }).catch(function(err){
+      console.error('[GLACIER] STOP précalcul insolation :', err.message);
+      document.getElementById('vstatus').textContent='❄️ Erreur insolation : '+err.message;
+      glacierRunning=false;
+    });
+  }
+
+  if(!ombreHorizonCopy){
+    console.log('[GLACIER] horizons absents → lancerOmbre() automatique');
+    document.getElementById('vstatus').textContent='❄️ Calcul horizons terrain (passe 1)…';
+    lancerOmbre();
+    var _poll=setInterval(function(){
+      if(!glacierRunning){ clearInterval(_poll); return; }
+      if(ombreHorizonCopy){ clearInterval(_poll); console.log('[GLACIER] horizons prêts'); _demarrer(); }
+    },1000);
+  } else {
+    console.log('[GLACIER] horizons disponibles');
+    _demarrer();
+  }
+}
+
+// ── Précalcul des 73 cartes d'insolation (une par tranche de 5 j), époque figée ──
+// Normalisation Uint8 sur un MAX GLOBAL (préserve l'intensité saison à saison).
+// Max estimé sur les deux solstices (bornes hautes), puis chaque carte quantifiée
+// au vol → une seule carte Float32 en mémoire à la fois (~73 Mo de Uint8 au total).
+function glacierPrechargeInsol(t_ka){
+  glacierInsolCards = new Array(GLAC_NJOURS);
+  // 1) Borne haute : max sur les deux solstices (jours 172 et 355), marge ×1,05
+  return Promise.all([insolationJour(t_ka,172), insolationJour(t_ka,355)]).then(function(sols){
+    var mx=0;
+    for(var s=0;s<sols.length;s++){ var c=sols[s]; for(var i=0;i<c.length;i++) if(c[i]>mx) mx=c[i]; }
+    glacierInsolMax = mx>0 ? mx*1.05 : 1;
+    // 2) Construire et quantifier les 73 cartes en séquence
+    var p = Promise.resolve();
+    for(var s2=0; s2<GLAC_NJOURS; s2++){
+      (function(slice){
+        p = p.then(function(){
+          if(!glacierRunning) return;
+          var jour = 1 + slice*GLAC_PAS_J;          // 1,6,…,361
+          return insolationJour(t_ka, jour).then(function(carte){
+            var q = new Uint8Array(GLAC_N), inv = 255/glacierInsolMax;
+            for(var i=0;i<GLAC_N;i++){ var v=carte[i]*inv; q[i] = v>255?255:(v<0?0:v); }
+            glacierInsolCards[slice] = q;
+            document.getElementById('vstatus').textContent =
+              '❄️ Insolation tranche '+(slice+1)+'/'+GLAC_NJOURS+'…';
+          });
+        });
+      })(s2);
+    }
+    return p;
+  });
+}
+
+// ════════════════════════════════════════════════════════════════
+// CHECKLIST LEDs
+// ════════════════════════════════════════════════════════════════
+function chkMajLeds() {
+  function led(id, on) { var e=document.getElementById(id); if(e) e.classList.toggle('on',!!on); }
+  led('led-map',     !!(typeof elevGrid!=='undefined' && elevGrid));
+  led('led-ombre',   !!(typeof ombreMask!=='undefined' && ombreMask));
+  led('led-insol',   !!(typeof insolMap!=='undefined' && insolMap));
+  led('led-temp',    !!(typeof tempMap!=='undefined' && tempMap));
+  led('led-partage', !!(typeof dsmPartage!=='undefined' && dsmPartage));
+  led('led-glacier', !!(typeof filetGlace!=='undefined' && filetGlace && filetGlace.some(function(v){return v>0;})));
+  dessinerDeltaC();
+}
+
+// ── Micro-courbe ΔT : spline paléo du forage + 7 points (validation visuelle) ──
+// Sans interprétation latitude : on trace la table du forage de l'hémisphère de
+// la carte (NORD si lat≥0, SUD sinon). X = -20 ka (gauche) → +2 ka (droite),
+// Y = min/max de l'anomalie. Les 7 points sont pointés à LEUR valeur exacte :
+// d'un coup d'œil on voit si la spline passe bien par eux et si la rechute YD est là.
+// La valeur brute du forage = anomaliePaleo(t, lat_forage) (fondu = 1 au forage).
+var _deltaCTrace = null;     // signe d'hémisphère déjà tracé (évite redessin)
+var _deltaCFond = null;      // fond capturé (courbe+points) pour le marqueur temps
+var _deltaCGeo  = null;      // géométrie du tracé (axes) pour placer le marqueur
+function dessinerDeltaC() {
+  var cv = document.getElementById('deltaC');
+  if(!cv || typeof GEO==='undefined' || !GEO || typeof anomaliePaleo!=='function') return;
+  var lat = (GEO.latMax + GEO.latMin) / 2;
+  var nord = lat >= 0;
+  if(_deltaCTrace === nord) return;     // déjà tracé pour cet hémisphère
+  _deltaCTrace = nord;
+
+  var forage = nord ? 70 : -78;         // latitude du forage (GRIP / Vostok)
+  var nom    = nord ? 'GRIP 70°N' : 'Vostok 78°S';
+  var table  = nord ? (typeof TEMP_PALEO_NORD!=='undefined'?TEMP_PALEO_NORD:null)
+                    : (typeof TEMP_PALEO_SUD !=='undefined'?TEMP_PALEO_SUD :null);
+  var TKA_MIN=-20, TKA_MAX=2;           // axe temps en ka
+  var W=cv.width, H=cv.height, ctx=cv.getContext('2d');
+  var PADL=4, PADR=4, PADT=4, PADB=4;
+  ctx.clearRect(0,0,W,H);
+
+  // Échantillonnage de la spline brute du forage
+  var nS=W, ys=new Float32Array(nS), mn=Infinity, mx=-Infinity;
+  for(var k=0;k<nS;k++){
+    var t = TKA_MIN + k/(nS-1)*(TKA_MAX-TKA_MIN);
+    var v = anomaliePaleo(t, forage);
+    ys[k]=v; if(v<mn)mn=v; if(v>mx)mx=v;
+  }
+  if(mx-mn < 0.5){ mx+=0.5; mn-=0.5; }
+  var pad=(mx-mn)*0.10; mn-=pad; mx+=pad;
+  function xPix(t){ return PADL + (t-TKA_MIN)/(TKA_MAX-TKA_MIN)*(W-PADL-PADR); }
+  function yPix(v){ return H-PADB - (v-mn)/(mx-mn)*(H-PADT-PADB); }
+
+  // Grille : 0 °C (pointillé) + verticale présent (t=0)
+  ctx.lineWidth=1;
+  if(0>=mn && 0<=mx){
+    ctx.strokeStyle='#45475a'; ctx.setLineDash([3,3]);
+    ctx.beginPath(); ctx.moveTo(PADL,yPix(0)); ctx.lineTo(W-PADR,yPix(0)); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  ctx.strokeStyle='#313244';
+  ctx.beginPath(); ctx.moveTo(xPix(0),PADT); ctx.lineTo(xPix(0),H-PADB); ctx.stroke();
+
+  // Spline
+  ctx.strokeStyle='#89dceb'; ctx.lineWidth=2; ctx.beginPath();
+  for(var k2=0;k2<nS;k2++){ var x=xPix(TKA_MIN+k2/(nS-1)*(TKA_MAX-TKA_MIN)), y=yPix(ys[k2]);
+    if(k2===0) ctx.moveTo(x,y); else ctx.lineTo(x,y); }
+  ctx.stroke();
+
+  // Les 7 points à leur place exacte
+  if(table){
+    ctx.fillStyle='#f9e2af';
+    for(var p=0;p<table.length;p++){
+      var tp=table[p].t; if(tp<TKA_MIN||tp>TKA_MAX) continue;
+      var px=xPix(tp), py=yPix(table[p].dT);
+      ctx.beginPath(); ctx.arc(px,py,2.4,0,2*Math.PI); ctx.fill();
+    }
+  }
+
+  // Repères texte : bornes X et min/max Y
+  ctx.fillStyle='#585b70'; ctx.font='9px sans-serif';
+  ctx.textBaseline='bottom'; ctx.fillText('-20ka', PADL+1, H-1);
+  ctx.textAlign='right';     ctx.fillText('+2', W-PADR, H-1); ctx.textAlign='left';
+
+  document.getElementById('deltaC-titre').textContent =
+    'ΔT '+nom+' — '+mx.toFixed(0)+'…'+mn.toFixed(0)+'°C';
+
+  // Capture pour le marqueur temps (point rouge) : fond + géométrie des axes
+  _deltaCFond = ctx.getImageData(0,0,W,H);
+  _deltaCGeo  = { forage:forage, TKA_MIN:TKA_MIN, TKA_MAX:TKA_MAX, mn:mn, mx:mx,
+                  PADL:PADL, PADR:PADR, PADT:PADT, PADB:PADB, W:W, H:H };
+}
+
+// ── Marqueur temps : point rouge qui parcourt la courbe ΔT à t_ka courant ──
+// Restaure le fond capturé puis pointe (t_ka, anomaliePaleo(t_ka, forage)) —
+// le point roule SUR la courbe tracée. Appelé à chaque pas de la simulation.
+function deltaCmarqueur(t){
+  var cv=document.getElementById('deltaC');
+  if(!cv || !_deltaCFond || !_deltaCGeo) return;
+  var g=_deltaCGeo, ctx=cv.getContext('2d');
+  ctx.putImageData(_deltaCFond,0,0);
+  var tc=Math.max(g.TKA_MIN,Math.min(g.TKA_MAX,t));
+  var x=g.PADL+(tc-g.TKA_MIN)/(g.TKA_MAX-g.TKA_MIN)*(g.W-g.PADL-g.PADR);
+  var v=anomaliePaleo(tc,g.forage);
+  var y=g.H-g.PADB-(v-g.mn)/(g.mx-g.mn)*(g.H-g.PADT-g.PADB);
+  ctx.fillStyle='#f38ba8';
+  ctx.beginPath(); ctx.arc(x,y,3,0,2*Math.PI); ctx.fill();
+}
+
+// ── Listener bouton ──
+document.getElementById('btn-glacier').addEventListener('click', function() {
+  if(glacierRunning){
+    glacierRunning=false;
+    this.textContent='❄️ Glacier';
+    this.classList.remove('active');
+    document.getElementById('vstatus').textContent='❄️ Simulation arrêtée';
+  } else {
+    glacierInit();
+    this.textContent='⏹ Stop Glacier';
+    this.classList.add('active');
+  }
+});
+
+// ── Overlay glacier + flux dans render() ──
+(function(){
+  var _r=render;
+  render=function(){
+    _r();
+    var DISP2=document.getElementById('c').width;
+    var rx=GLAC_DIM/imgW, ry=GLAC_DIM/imgH;
+    var sX=Math.round(srcX*rx), sY=Math.round(srcY*ry);
+    var sW=Math.round(DISP2*srcPPx*rx), sH=Math.round(DISP2*srcPPx*ry);
+    ctx.imageSmoothingEnabled=false;
+    if(glacierOsc) ctx.drawImage(glacierOsc,sX,sY,sW,sH,0,0,DISP2,DISP2);
+    if(fluxActif && fluxOsc) ctx.drawImage(fluxOsc,sX,sY,sW,sH,0,0,DISP2,DISP2);  // flèches + extension max PAR-DESSUS
+  };
+})();
 
 // ════════════════════════════════════════════════════════════════
 // NAVIGATION (molette + drag)
@@ -1913,184 +1900,18 @@ canvas.addEventListener('mousemove',e=>{
       alt=`eau surf. ${waterLevel.toFixed(0)} m${prof>0?` (prof. ${prof.toFixed(0)} m)`:''}`;
     } else if(v>0.5&&v<9000) alt=`${v.toFixed(0)} m`;
   }
-  coordEl.textContent=`${toDMS(lat,true)}  ${toDMS(lon,false)}  ${alt}`;
+  // Valeur insolation du pixel si la carte insol est affichée (en W/m²)
+  let insolTxt='';
+  if (typeof insolActive!=='undefined' && insolActive && insolMap){
+    const g=OMBRE_DIM;
+    const gc=Math.min(g-1,Math.max(0,Math.round(px/(imgW-1)*(g-1))));
+    const gr=Math.min(g-1,Math.max(0,Math.round(py/(imgH-1)*(g-1))));
+    const vi=insolMap[gr*g+gc];
+    if(vi>0) insolTxt=`  ☀️ ${(vi*INSOL_W_PAR_H).toFixed(0)} W/m²`;
+  }
+  coordEl.textContent=`${toDMS(lat,true)}  ${toDMS(lon,false)}  ${alt}${insolTxt}`;
 });
 canvas.addEventListener('mouseleave',()=>{ coordEl.textContent='—'; });
-
-// ════════════════════════════════════════════════════════════════
-// SIMULATION EAU — Set border-front, montée si bloqué
-// ════════════════════════════════════════════════════════════════
-function effectiveRise(){ return waterRise<=10 ? waterRise : 10+(waterRise-10)*2; }
-
-function reachable(idx){
-  const bElev=elevGrid[idx], eff=effectiveRise();
-  const row=Math.floor(idx/imgW), col=idx%imgW;
-  for(let dr=-1;dr<=1;dr++) for(let dc=-1;dc<=1;dc++){
-    if(!dr&&!dc) continue;
-    const nr=row+dr, nc=col+dc;
-    if(nr<0||nr>=imgH||nc<0||nc>=imgW) continue;
-    const nIdx=nr*imgW+nc;
-    if(wet.has(nIdx)&&bElev<=elevGrid[nIdx]+eff) return true;
-  }
-  return false;
-}
-
-function addToWet(idx,c){
-  wet.add(idx); border.delete(idx);
-  const row=Math.floor(idx/imgW), col=idx%imgW;
-  c.fillRect(col,row,1,1);
-  for(let dr=-1;dr<=1;dr++) for(let dc=-1;dc<=1;dc++){
-    if(!dr&&!dc) continue;
-    const nr=row+dr, nc=col+dc;
-    if(nr<0||nr>=imgH||nc<0||nc>=imgW) continue;
-    const nIdx=nr*imgW+nc;
-    if(wet.has(nIdx)) continue;
-    const nv=elevGrid[nIdx];
-    if(nv<=0.5){touchesMer=true; continue;}
-    border.add(nIdx);
-  }
-}
-
-function drawFaucetMarker(c,col,row){
-  c.fillStyle='rgb(220,40,40)'; c.fillRect(col-2,row-2,5,5);
-}
-
-function simTick(){
-  if(touchesMer){
-    simRunning=false;
-    document.getElementById('vstatus').textContent=
-      `Mer atteinte — surf. ${waterLevel.toFixed(0)} m — ${wet.size.toLocaleString()} px`;
-    render(); return;
-  }
-  if(border.size===0){
-    simRunning=false;
-    document.getElementById('vstatus').textContent='Simulation terminée';
-    render(); return;
-  }
-  const c=oscWater.getContext('2d');
-  c.fillStyle='rgba(0,20,80,.88)';
-  let minE=Infinity;
-  for(const idx of border){
-    const bElev=elevGrid[idx];
-    if(bElev<minE&&reachable(idx)) minE=bElev;
-  }
-  if(minE===Infinity){
-    waterRise++;
-    waterLevel=faucetElev+effectiveRise();
-    document.getElementById('vstatus').textContent=
-      `Montée +${waterRise} (pénétration ${effectiveRise().toFixed(0)} m) — surf. ${waterLevel.toFixed(0)} m — ${wet.size.toLocaleString()} px`;
-    render(); return;
-  }
-  const toAdd=[];
-  for(const idx of border)
-    if(elevGrid[idx]<=minE+0.5&&reachable(idx)) toAdd.push(idx);
-  for(const idx of toAdd) addToWet(idx,c);
-  waterLevel=faucetElev+effectiveRise();
-  if(faucetIdx>=0) drawFaucetMarker(c,faucetIdx%imgW,Math.floor(faucetIdx/imgW));
-  document.getElementById('vstatus').textContent=
-    `Surf. ${waterLevel.toFixed(0)} m (+${waterRise} m) — ${wet.size.toLocaleString()} px — front ${border.size.toLocaleString()}`;
-  render();
-}
-
-function resetSim(){
-  simRunning=false;
-  wet=null; border=null; faucetIdx=-1;
-  faucetElev=0; waterRise=0; waterLevel=0; touchesMer=false;
-  if(oscWater) oscWater.getContext('2d').clearRect(0,0,oscWater.width,oscWater.height);
-  render();
-  document.getElementById('vstatus').textContent=
-    'Clic droit = poser le robinet  |  Espace = reset';
-}
-
-function placeFaucet(col,row){
-  if(!elevGrid||col<0||col>=imgW||row<0||row>=imgH) return;
-  const v=elevGrid[row*imgW+col]; if(v<=0.5) return;
-  resetSim();
-  faucetIdx=row*imgW+col; faucetElev=v;
-  waterRise=0; waterLevel=v; touchesMer=false;
-  wet=new Set(); border=new Set();
-  const c=oscWater.getContext('2d');
-  c.fillStyle='rgba(0,20,80,.88)';
-  addToWet(faucetIdx,c); drawFaucetMarker(c,col,row);
-  render();
-  simRunning=true; requestAnimationFrame(simLoop);
-  document.getElementById('vstatus').textContent=`Robinet — sol ${v.toFixed(0)} m`;
-}
-
-function simLoop(){ if(!simRunning) return; simTick(); if(simRunning) requestAnimationFrame(simLoop); }
-
-canvas.addEventListener('contextmenu',e=>{
-  e.preventDefault(); if(!elevGrid) return;
-  const r=canvas.getBoundingClientRect();
-  const cx=(e.clientX-r.left)/r.width, cy=(e.clientY-r.top)/r.height;
-  placeFaucet(Math.round(srcX+cx*DISP*srcPPx), Math.round(srcY+cy*DISP*srcPPx));
-});
-window.addEventListener('keydown',e=>{ if(e.code==='Space'){e.preventDefault(); resetSim();} });
-
-// ════════════════════════════════════════════════════════════════
-// CHARGEMENT — via Worker (zéro blocage fil principal)
-// Le Worker reçoit l'ArrayBuffer (transfert), renvoie :
-//   elevGrid F32 + hypsoPixels RGBA + contourPixels RGBA (transferables)
-// Le fil principal construit les OffscreenCanvas depuis les pixels reçus.
-// ════════════════════════════════════════════════════════════════
-async function loadInViewer(file){
-  document.getElementById('placeholder').style.display='none';
-  swapBtn.disabled=true;
-  document.getElementById('btn-carto').disabled=true;
-  document.getElementById('btn-rec').disabled=true;
-  oscHypso=null; oscContour=null; resetSim();
-
-  document.title=`DSM — ${file.name.replace(/\.[^.]+$/,'')}`;
-  document.getElementById('titre').textContent=file.name.replace(/\.[^.]+$/,'');
-  document.getElementById('vstatus').textContent='Lecture fichier…';
-
-  const buf=await file.arrayBuffer();      // lit sur disque
-  document.getElementById('vstatus').textContent='Worker démarré — fil principal libre';
-
-  activeWorker=spawnWorker();
-  activeWorker.onmessage=(e)=>{
-    const d=e.data;
-    if(d.type==='progress'){
-      document.getElementById('vstatus').textContent=d.msg;
-
-    } else if(d.type==='done'){
-      const {width:W,height:H,vmin,vmax,geo,interval,major,
-             elevGrid:eg,hypsoPixels,contourBitmap}=d;
-
-      imgW=W; imgH=H; GEO=geo; elevGrid=eg;
-      vminGlobal=vmin; vmaxGlobal=vmax;
-      makeHypsoLUT();
-
-      oscHypso=new OffscreenCanvas(W,H);
-      oscHypso.getContext('2d').putImageData(new ImageData(hypsoPixels,W,H),0,0);
-      // Bitmap Marching Squares dessiné dans le Worker — transfert zero-copy
-      oscContour=new OffscreenCanvas(W,H);
-      oscContour.getContext('2d').drawImage(contourBitmap,0,0);
-      contourBitmap.close();
-      oscWater=new OffscreenCanvas(W,H);
-
-      srcX=0; srcY=0; srcPPx=Math.max(W,H)/DISP;
-      viewMode='hypso'; swapBtn.textContent='⇄ Courbes de niveau';
-      swapBtn.disabled=false;
-      document.getElementById('btn-carto').disabled=false;
-      document.getElementById('btn-rec').disabled=false;
-      document.getElementById('btn-ombre').disabled=false;
-
-      resizeWrap();
-      document.getElementById('vstatus').textContent=
-        `${W}×${H} px — ${vmin.toFixed(0)}–${vmax.toFixed(0)} m`
-        +` — courbes /${interval} m (majeure /${major} m)`;
-      render(); activeWorker=null;
-
-    } else if(d.type==='error'){
-      document.getElementById('vstatus').textContent='Erreur Worker : '+d.msg;
-      activeWorker=null;
-    }
-  };
-
-  // Transfert zero-copy : buf est envoyé au Worker, inutilisable ici après
-  activeWorker.postMessage({type:'load', buffer:buf}, [buf]);
-}
 
 // ════════════════════════════════════════════════════════════════
 // LEAFLET CARTO ON/OFF
@@ -2122,7 +1943,6 @@ cartoBtn.addEventListener('click',()=>{
     syncCarto();
   } else lmapEl.style.display='none';
 });
-
 // ════════════════════════════════════════════════════════════════
 // ENREGISTREMENT WebM 10 fps
 // ════════════════════════════════════════════════════════════════
@@ -2151,7 +1971,6 @@ recBtn.addEventListener('click',()=>{
     recBtn.textContent='⏹ STOP'; recBtn.classList.add('recording');
   }
 });
-
 // ════════════════════════════════════════════════════════════════
 // MODE VIDÉO 365 JOURS — AVI MJPEG maison, 10fps EXACT
 // MediaRecorder horodate en temps réel → inutilisable pour un fps fixe.
@@ -2262,7 +2081,7 @@ function aviBuild(frames, W, H, fps) {
 }
 
 function videoStart() {
-  if (!ombreHorizonCopy || !insolRise) {
+  if (!ombreHorizonCopy ) {
     document.getElementById('vstatus').textContent =
       'Calculer l\'ombre terrain d\'abord';
     return;
@@ -2309,7 +2128,10 @@ function videoLoopJour(j) {
 
   ctrlJour = j;
   insolDay = j;
-  var rise = insolRise[j]; if (rise < 0) rise = 0;
+
+  var rh = ctrlRiseSet();
+  var rise = (rh && rh.rise >= 0) ? rh.rise : 0;
+
   ctrlHeure = rise + 0.001;
   insolHour = ctrlHeure;
 
@@ -2361,24 +2183,44 @@ function videoLoopJour(j) {
 
 
 
-// ════════════════════════════════════════════════════════════════
-// COMMUNICATION AVEC map.html (BroadcastChannel)
-// ════════════════════════════════════════════════════════════════
 const bc=new BroadcastChannel('copernicus_dsm');
 bc.onmessage=e=>{ if(e.data?.type==='loadFile') loadInViewer(e.data.file); };
-window.addEventListener('load',()=>{ bc.postMessage('ready'); });
+window.addEventListener('load',()=>{ bc.postMessage('ready'); setInterval(chkMajLeds, 400); });
+
+
 
 // ════════════════════════════════════════════════════════════════
-// BOUTON OMBRE TERRAIN — Phase 1
+// BOUTON OMBRE TERRAIN — Phase 1 (Avec Panel GUI Solaire Actif)
 // ════════════════════════════════════════════════════════════════
 document.getElementById('btn-ombre').addEventListener('click', function() {
   if (ombreRunning) {
     stopOmbre();
+    ctrlFermer(); // Masque le panneau et réajuste la taille de la carte
   } else {
     lancerOmbre();
+    ctrlOuvrir(); // Affiche le panneau, calcule la position du soleil et rafraîchit
   }
   this.classList.toggle('active', ombreRunning);
 });
+
+
+
+
 </script>
+
+<!-- Modules — ordre IMPÉRATIF (cf. cartouche) -->
+<script src="dsm-astro.js"></script>
+<script src="dsm-worker-tiff.js"></script>
+<script src="dsm-ombre.js"></script>
+<script src="dsm-insol.js"></script>
+<script src="dsm-temp.js"></script>
+<script src="dsm-partage.js"></script>
+<script src="dsm-mesh.js"></script>
+<script src="dsm-filet.js"></script>
+<script src="dsm-fil3d.js"></script>
+<script src="dsm-foehn.js"></script>
+<script src="dsm-flux.js"></script>
+<script src="dsm-worker-glacier.js"></script>
+<script src="dsm-worker-flux.js"></script>
 </body>
 </html>
