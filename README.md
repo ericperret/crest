@@ -1,18 +1,25 @@
 # DSM (Digital Surface Model) — CREST
 
-Simulation glaciologique physiquement contrainte de la dynamique de la glace
-sur les Alpes du Nord au Dernier Maximum Glaciaire (LGM, ~−20 000 ans), en
-JavaScript pur (navigateur + Web Workers), sans dépendance externe hormis
-Leaflet (carto) et le tuilage MNT.
+Simulation glaciologique physiquement contrainte de la dynamique de la glace,
+en JavaScript pur (navigateur + Web Workers), sans dépendance externe hormis
+Leaflet (carto) et le tuilage MNT. Fonctionne sur **n'importe quel carré
+Copernicus DSM de la planète** — pas seulement les Alpes, qui ne servent que
+de cas de calibration (moraines datées, thèse Roattino 2022).
 
 ## Démarrer
 
-Ouvrir `dsm.html` dans un navigateur. Aucune installation, aucun build.
+Ouvrir **`map.html`** — c'est le point d'entrée. Charger un dossier local de
+tuiles Copernicus DSM (bouton dossier, `webkitdirectory` — seuls les noms de
+sous-dossiers sont lus au scan, pas leur contenu). La mappemonde affiche les
+tuiles disponibles ; un clic sur une tuile verte lit son `.tif`, l'envoie par
+`BroadcastChannel` à `dsm.html` (ouvert automatiquement, fenêtre réutilisée
+d'un clic à l'autre) qui prend le relais pour la simulation. Aucune
+installation, aucun build.
 
 ## Architecture
 
 Maillage triangulaire adaptatif (**FILET**, `dsm-filet.js`/`dsm-mesh.js`) sur
-grille d'altitude 1024×1024 (Copernicus DEM). Écoulement résolu par une
+la grille d'altitude 1024×1024 de la tuile choisie. Écoulement résolu par une
 **Shallow Ice Approximation** (diffusion non linéaire, déformation de Glen +
 glissement basal till linéaire) avec solveur **implicite** (Picard +
 Gauss-Seidel, ensemble actif, segments adaptatifs) — `dsm-flux.js`, exécuté
@@ -30,7 +37,8 @@ Convention temporelle du projet : `t_ka`, négatif = passé (LGM = −20).
 
 | Fichier | Rôle |
 |---|---|
-| `dsm.html` | point d'entrée, interface, boucle de simulation |
+| `map.html` | **point d'entrée** — mappemonde, sélection de tuile Copernicus |
+| `dsm.html` | fenêtre de simulation pilotée par map.html — interface, boucle |
 | `dsm-flux.js` / `dsm-worker-flux.js` | écoulement SIA implicite |
 | `dsm-worker-glacier.js` | bilan de masse (dépôt, PDD, tassement) |
 | `dsm-temp.js` / `dsm-temp_test.js` | modèle et **validation** de température |
@@ -40,7 +48,6 @@ Convention temporelle du projet : `t_ka`, négatif = passé (LGM = −20).
 | `dsm-astro.js` / `dsm-insol.js` / `dsm-ombre.js` | astronomie, insolation, ombrage |
 | `dsm-init-glacier.js` / `dsm-partage.js` | initialisation, partage d'état |
 | `dsm-worker-tiff.js` | chargement des tuiles MNT |
-| `map.html` | visionneuse Copernicus compagnon |
 
 ## Principe directeur
 
@@ -56,4 +63,5 @@ l'historique des corrections et leurs justifications.
 explicite). Température validée contre stations Météo-France (Chambéry-Aix,
 Bourg-Saint-Maurice, fiches 1991-2020) avec correction de référence
 préindustrielle et nébulosité mensuelle mesurée. Calibration en cours contre
-les fronts morainiques datés (thèse Roattino 2022).
+les fronts morainiques datés (thèse Roattino 2022) sur le cas d'étude alpin.
+
