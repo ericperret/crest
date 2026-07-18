@@ -1,6 +1,17 @@
 /*
   Fichier  : dsm-temp.js
   Date     : 2026-07-15
+  Version  : 2.6 — (1) CORRECTION DE RÉFÉRENCE PALÉO (« l'astuce ») :
+             TEMP_REF_RECHAUF = 1,3 °C retranché de l'anomalie pour le passé
+             préindustriel (rampe 1850→2005) — la calibration 1991-2020 ne
+             réchauffe plus le paléo (≈ −200 m d'ELA au LGM). (2) NÉBULOSITÉ
+             MENSUELLE MESURÉE (TEMP_NEB, fiche 73054001) sur l'amplitude
+             diurne + A_DIURNE recalibré 13,8 (amplitude plein ciel d'été
+             mesurée). Corrige les Tmax d'arrière-saison (+2 à +8 °C avant).
+  Version  : 2.5 — CYCLE DIURNE CENTRÉ dans tempInstant : moyenne 24 h nulle
+             (jour au-dessus de la base, nuit en dessous) — cohérent avec la
+             convention « base = moyenne journalière » et avec le PDD centré
+             (worker-glacier 1.5). Impacte aussi le masque « zone chaude ».
   Version  : 2.4 — AUDIT DES CONSTANTES : TEMP_A_SAISON 15→9,5 °C (amplitude
              annuelle mesurée aux normales 1991-2020, ~45°N) et TEMP_JOUR_ETE
              172→203 (pic thermique réel ~22 juillet, retard d'inertie sur le
@@ -193,7 +204,22 @@ function _splineEval(table, m, t_ka) {
 //              → l'équateur n'est pas au milieu arithmétique.
 // t_ka > 0 (futur) → présent ; t_ka < -20 → LGM (clamps dans _splineEval).
 const TEMP_LAT_PIVOT = 45.0;   // latitude de raccord droites 1-2 / droite 3
+// ── Correction de RÉFÉRENCE (v2.6, « l'astuce ») : le zéro de la courbe paléo
+// est ~1950 ; la calibration/validation station est 1991-2020 (centre 2005),
+// période réchauffée de ~+1,3 °C par rapport à ce zéro (Météo-France : France
+// +1,7 °C depuis 1900, essentiel post-1980 ; HISTALP : Alpes ~+2 °C/siècle).
+// Sans correction, tout le passé préindustriel est ~1,3 °C trop chaud
+// (≈ +200 m d'ELA). On RETRANCHE ce réchauffement avec une rampe 1850→2005 :
+// pleine correction pour t_ka ≤ -0,1 (préindustriel), nulle à +0,055 (2005) —
+// le présent reste exactement calé sur les normales validées (dsm-temp_test).
+const TEMP_REF_RECHAUF = 1.3;   // °C — sourcé ci-dessus
 function anomaliePaleo(t_ka, latDeg) {
+  var brut = _anomaliePaleoBrut(t_ka, latDeg);
+  var w = (0.055 - t_ka) / 0.155;          // 1 avant -0,1 ka, 0 à 2005
+  if (w < 0) w = 0; else if (w > 1) w = 1;
+  return brut - TEMP_REF_RECHAUF * w;
+}
+function _anomaliePaleoBrut(t_ka, latDeg) {
   var anomNord = _splineEval(TEMP_PALEO_NORD, _PENTES_NORD, t_ka);
   var anomSud  = _splineEval(TEMP_PALEO_SUD,  _PENTES_SUD,  t_ka);
   // Valeurs aux pivots (raccords)
@@ -281,7 +307,28 @@ function isothermeZero(t_ka) {
 const TEMP_A_SAISON = 9.5;    // °C — amplitude annuelle MESURÉE (normales 1991-2020,
                               // stations 45°N : Lyon 9,7 / Chambéry 9,3 / Munich 9,6).
                               // INTÉRIM : sera remplacée par l'EBM saisonnier (TODO 2).
-const TEMP_A_DIURNE = 12.0;   // °C — écart Tmax−Tmin plein soleil (la base C joue le rôle
+// Nébulosité mensuelle MESURÉE : durée d'insolation de la fiche Météo-France
+// 73054001 (Bourg-St-Maurice, 1991-2020) / durée astronomique du jour à 45,6°N,
+// normalisée au max (août). C'est la fraction de ciel dégagé qui module
+// l'amplitude diurne réelle (7-9 °C l'hiver, 13-14 l'été — dsm-temp_test).
+// HYPOTHÈSE DE TRANSFERT PALÉO documentée : régime saisonnier de nébulosité
+// supposé stable dans le temps (aucune donnée contraire disponible ; à revoir
+// si une reconstruction régionale devient exploitable).
+const TEMP_NEB = [0.744,0.796,0.880,0.826,0.819,0.909,0.990,1.000,0.954,0.803,0.668,0.664];
+function nebJour(jour) {   // interpolation linéaire circulaire entre milieux de mois
+  var jc = [15,46,74,105,135,166,196,227,258,288,319,349];
+  var j = ((jour % 365) + 365) % 365;
+  for (var m = 0; m < 12; m++) {
+    var a = jc[m], b = jc[(m+1)%12], fb = TEMP_NEB[(m+1)%12], fa = TEMP_NEB[m];
+    var db = (b - a + 365) % 365, dj = (j - a + 365) % 365;
+    if (dj <= db) return fa + (fb - fa) * dj / db;
+  }
+  return 1;
+}
+const TEMP_A_DIURNE = 13.8;   // °C — amplitude Tmax−Tmin PLEIN CIEL DÉGAGÉ :
+                              // recalibrée pour que A_DIURNE × TEMP_NEB(été)
+                              // reproduise l'amplitude mesurée d'été (13,8 °C
+                              // en juil.-août à Bourg-St-Maurice, fiche 1991-2020).   // °C — écart Tmax−Tmin plein soleil (la base C joue le rôle
                               // du minimum nocturne). Plage mesurée montagne ciel clair
                               // 10-12 °C : conservé, à valider par tempVerif() (TODO 2).
 const TEMP_JOUR_ETE = 203;    // jour julien du pic thermique (~22 juillet) : retard de
@@ -305,10 +352,17 @@ function tempInstant(idx, heure, jour, t_ka, rise, set, estEnSoleil) {
   // estEnSoleil : booléen (true→1, false→0) OU pondération 0..1 (insolation locale
   // du jour, ombre déjà incluse). Un versant ombré → diurne nul ; plein sud → max.
   var wSun = +estEnSoleil;                       // bool→{0,1} ; nombre→0..1
+  // CENTRAGE (v2.5) : moyenne 24 h nulle — le jour monte au-dessus de la base,
+  // la nuit descend en dessous : m = (2b/π)·(L/24), b = A_DIURNE·wSun.
   var tDiurne = 0;
-  if (wSun > 0 && set > rise && heure >= rise && heure <= set) {
-    var phase = (heure - rise) / (set - rise);   // 0→1 lever→coucher
-    tDiurne = TEMP_A_DIURNE * Math.sin(Math.PI * phase) * wSun;
+  if (wSun > 0 && set > rise) {
+    var bD = TEMP_A_DIURNE * nebJour(jour) * wSun;
+    var mD = (2 * bD / Math.PI) * ((set - rise) / 24);
+    tDiurne = -mD;
+    if (heure >= rise && heure <= set) {
+      var phase = (heure - rise) / (set - rise); // 0→1 lever→coucher
+      tDiurne += bD * Math.sin(Math.PI * phase);
+    }
   }
 
   return tBase + tSaison + tDiurne;

@@ -1,9 +1,11 @@
 /*
   Fichier  : dsm-worker-glacier.js
   Date     : 2026-07-15
-  Version  : 1.3.0  (interrupteur K.fonte : à 0 la fonte PDD est débranchée —
-             dépôt et tassement conservés. Test du transport pur, décision
-             GLAC_FONTE dans dsm.html.)
+  Version  : 1.6.0  (amplitude diurne × sc.bNeb — nébulosité mensuelle mesurée,
+             fiche 73054001, transmise par le pas ; aDiurne = 13,8 plein ciel.)
+  Version  : 1.5.0  (CYCLE DIURNE CENTRÉ : moyenne 24 h = C exactement — l'ancien
+             sinus positif ajoutait (2b/π)·(L/24) ≈ +4,6 °C de moyenne estivale
+             au soleil, double comptage de la convention « base = moyenne ».)
   Version  : 1.2.0  (suppression de φ : fonte pleine partout — les cellules
              partielles n'existent plus, cf. dsm-flux 3.4. Signature pas()
              sans paramètre phi.)
@@ -42,22 +44,26 @@ onmessage=function(ev){
       if(!S.actif[t] && g[t]<=0 && n[t]<=0) continue;
       var z=S.z[t], fDT=S.fDT[t];
       var C=(z<=0.5?base:base-lap*z)+sc.tSaison+fDT;
-      var b=K.aDiurne*(S.wSun[off+t]/255);
-      // PDD analytique 24 h (identique v3.45)
-      var degH=(C>0?C*(24-sc.L):0);
+      var b=K.aDiurne*(sc.bNeb||1)*(S.wSun[off+t]/255);   // nébulosité mensuelle (dsm-temp 2.6)
+      // PDD analytique 24 h — diurne CENTRÉ (v1.5) : C est la MOYENNE journalière
+      // (convention T0_MER/A_SAISON) ; jour au-dessus, nuit en dessous :
+      // Cn = C − m, m = (2b/π)·(L/24) → moyenne 24 h = C exactement.
+      var mC=(sc.L>0&&b>0)?(2*b/PI)*(sc.L/24):0;
+      var Cn=C-mC;
+      var degH=(Cn>0?Cn*(24-sc.L):0);
       if(sc.L>0&&b>0){
-        if(C>=0) degH+=(C+2*b/PI)*sc.L;
-        else if(C+b>0){
-          var f1=Math.asin(-C/b)/PI;
-          degH+=(C*(1-2*f1)+(2*b/PI)*Math.cos(PI*f1))*sc.L;
+        if(Cn>=0) degH+=(Cn+2*b/PI)*sc.L;
+        else if(Cn+b>0){
+          var f1=Math.asin(-Cn/b)/PI;
+          degH+=(Cn*(1-2*f1)+(2*b/PI)*Math.cos(PI*f1))*sc.L;
         }
-      } else if(sc.L>0&&C>0) degH+=C*sc.L;
+      } else if(sc.L>0&&Cn>0) degH+=Cn*sc.L;
       // 1. dépôt
       var fSnow=C<=0?1:(C<2?(2-C)/2:0);
       n[t]+=sc.precJour*S.cosT[t]*S.fC[t]*fSnow;
       // 2. fonte
       var dh=degH*K.pasJ;
-      if(dh>0&&K.fonte){                        // K.fonte=0 : fonte débranchée
+      if(dh>0){
         var fN=dh*K.ddfN;
         if(fN<=n[t]) n[t]-=fN;
         else { var r=(fN-n[t])/K.ddfN; n[t]=0; g[t]=Math.max(0,g[t]-r*K.ddfG); }

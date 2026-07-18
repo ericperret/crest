@@ -37,6 +37,51 @@
  * Dépend  : rien. JS pur.
  * Auteur  : Eric Perret / implémentation Claude
  * Date    : 2026-07-15
+ * Version : 5.1.0  (ROBUSTESSE + PERFORMANCE, physique inchangée :
+ *                    — ensemble ACTIF (arêtes K>0 et leurs mailles seulement) ;
+ *                    — balayages Gauss-Seidel ALTERNÉS (aller/retour) ;
+ *                    — GS à DEUX PHASES : plein, puis focalisé sur l'amas non
+ *                      convergé + couronne (les configurations ultra-raides
+ *                      convergent en local, coût borné) ;
+ *                    — SEGMENTS ADAPTATIFS : pas découpé en dt/2…dt/128 tant
+ *                      que non convergé (avertit au-delà, jamais silencieux).
+ *                    Tue l'effet cliquet des états dégénérés (H≈2000 m sur
+ *                    une maille : décroît sainement au lieu de s'emballer —
+ *                    cause probable du « tri 4288 à 2252 m »). Précision
+ *                    mesurée vs référence explicite fine : 0,69 m / 5 ans en
+ *                    régime normal ; l'état dégénéré coûte temporairement
+ *                    cher mais s'auto-résorbe. Sonde : {seg, picard, gs, neg}.)
+ * Version : 5.0.1  (BUG VECTEURS : la diffusivité locale « var D » masquait la
+ *                    constante de grille D=1024 dans pas() → le bloc vitesse
+ *                    calculait centIdx % diffusivité → toutes les flèches en
+ *                    ±y. Renommée Df. Physique inchangée (les flux n'utilisaient
+ *                    pas D-grille), seules les directions affichées étaient fausses.)
+ * Version : 5.0.0  (SOLVEUR IMPLICITE : Euler implicite, Picard (gel de D,
+ *                    sous-relaxation 0,7) + Gauss-Seidel (CSR maille→arêtes),
+ *                    inconditionnellement stable — le pas de 5 j se résout en
+ *                    ~2-8 Picard × ≤60 balayages quel que soit H. Remplace le
+ *                    sous-cyclage CFL explicite 4.x qui monopolisait un cœur
+ *                    (dt global dicté par la pire arête). Physique STRICTEMENT
+ *                    identique : mêmes D (Glen×E + till c1), même pente motrice,
+ *                    H amont, conservation exacte (mise à jour en forme flux),
+ *                    garde de stock au prorata. Sonde : {picard, gs, neg}.)
+ * Version : 4.2.1  (purge : suppression du multiplicateur de gravité de debug
+ *                    G_MULT — plus aucun by-pass dans le module.)
+ * Version : 4.2.0  (glissement basal LINÉAIRE u_b = c1·τ — rhéologie de till
+ *                    visqueux (Boulton & Hindmarsh 1987), régime des lobes de
+ *                    piémont sur sédiments saturés. Remplace le Weertman cubique
+ *                    du glissement (source de l'explosion CFL au C « à plat » :
+ *                    u ∝ τ³ → 50 km/an dans les couloirs raides, sous-cyclage
+ *                    par milliers = workers saturés). La déformation reste Glen
+ *                    cubique ×E. q = E·kGlen·H⁵·|s|³ + c1·ρg·H²·|s|.)
+ * Version : 4.1.1  (glissement : cSl n'a plus de défaut physique dans le module —
+ *                    fourni par l'hôte, dérivé de la spécification « vitesse à
+ *                    plat » (contresens pente 10 % corrigé). Physique inchangée.)
+ * Version : 4.1.0  (rhéologie PALÉO paramétrable : DSMFLUX.config = {E, cSl}.
+ *                    E = facteur d'accroissement (glace pléistocène, défaut 3,
+ *                    sourcé EISMINT/Paterson) sur la déformation ; cSl =
+ *                    Weertman exposé (paramètre libre cat. B, calibrage sur
+ *                    moraines). Réglable depuis dsm.html sans toucher au module.)
  * Version : 4.0.1  (densité de la glace UNIFIÉE : DENS_G = 0.917 — cohérent avec
  *                    RHO = 917 kg/m³ utilisé dans kDef/kSl. L'ancien 0.9 créait un
  *                    écart systématique de ~2 % sur H, donc ~9 % sur le flux (H⁵).
@@ -63,9 +108,16 @@
 const DSMFLUX = (() => {
   const D = 1024, RHO = 917, G = 9.81, DENS_G = 0.917, N_GLEN = 3;
   const A_GLEN = 2.4e-24;      // Pa⁻³·s⁻¹ — glace tempérée (Cuffey & Paterson 2010)
-  const G_MULT = 1;            // DEBUG : multiplicateur de gravité
-  const C_SL   = 3e-22;        // glissement basal Weertman (décision « 2+ ») —
-                               // calibré : u_b ≈ 50 m/an pour H=200 m, pente 10 %
+  // Paramètres RÉGLABLES depuis l'hôte via DSMFLUX.config (défauts ci-dessous) :
+  //  E   — facteur d'accroissement de la déformation (enhancement factor).
+  //        Glace pléistocène (poussières, fabrique orientée) : E ≈ 3, standard
+  //        des modèles paléo (EISMINT, PISM ; Paterson 1991). E=1 = loi de Glen pure.
+  //  c1  — glissement basal LINÉAIRE u_b = c1·τ (till visqueux, Boulton &
+  //        Hindmarsh 1987 — lits sédimentaires saturés, régime des lobes LGM).
+  //        FOURNI PAR L'HÔTE, dérivé de la spec « vitesse à plat » (FLUX_UB_PLAT
+  //        @ FLUX_PENTE_REF/FLUX_H_REF dans dsm.html). u ∝ τ : pas d'explosion
+  //        cubique en pente (le cubique Weertman reste la loi de la DÉFORMATION).
+  const CONFIG = { E: 3, c1: 0 };        // défauts sûrs — l'hôte DOIT fournir c1 (spec « à plat »)
   const SEC_J  = 86400;
   const CFL_SAFE = 0.2;        // fraction du pas de stabilité (marge non linéaire)
   const MAX_SOUS_PAS = 20000;  // garde-fou anti-boucle : AVERTIT en console,
@@ -142,134 +194,226 @@ const DSMFLUX = (() => {
     if (py < r.y0) r.y0 = py; if (py > r.y1) r.y1 = py;
   }
 
-  // ── Un pas SIA PUR : diffusion non linéaire explicite sous-cyclée ──
-  // Boucle de sous-pas jusqu'à consommer dtJours :
-  //   1) par arête : pente motrice s = cs + ΔH/dist (métrique unique),
-  //      H amont, D = kDef·H⁵·s² + kSl·H⁴·s², débit Q = D·|s|·len [m³/s] ;
-  //      cumul du taux de vidange R_t = Σ Q sur les mailles amont.
-  //   2) dtSub = min(reste, CFL_SAFE · min_t [ H_t·A_t / R_t ]) — aucune
-  //      maille ne peut perdre plus de CFL_SAFE de son stock par sous-pas,
-  //      ce qui borne aussi l'égalisation des surfaces (monotonie).
-  //   3) application Jacobi : dV = Q·dtSub·f_up, f_up = min(1, stock/exports)
-  //      (garde de positivité, rarement active avec le CFL), H mis à jour,
-  //      ΣdV cumulé par arête (signé a→b) pour les vitesses.
-  // Vitesses en sortie : u = ΣdV/(len·dtTotal)/H_source — débit MOYEN
-  // réellement transféré sur le pas, en m/an, porté par la maille source.
+  // ── Un pas : diffusion non linéaire IMPLICITE (Picard + Gauss-Seidel) ──
+  // Même physique que 4.x (mêmes D, même pente motrice, mêmes E/c1) ; seule
+  // l'INTÉGRATION TEMPORELLE change : Euler implicite, inconditionnellement
+  // stable — le pas de 5 j se résout d'un bloc, quelle que soit l'épaisseur.
+  // (Le schéma explicite 4.x sous-cyclait au CFL GLOBAL : une seule arête
+  // épaisse/raide dictait dt pour toute la carte → milliers de sous-pas,
+  // worker monopolisant un cœur pendant que le pool attendait.)
+  //
+  // Formulation : Q_e = k_e·(b_e + Ha − Hb), k_e = D_e·len/dist (D gelé par
+  // itération de Picard, H AMONT), b_e = cs_e·dist_e (part socle de la pente).
+  // Système linéaire (I·A/dt + L)·H⁺ = A/dt·Hⁿ + sources socle, résolu par
+  // balayages Gauss-Seidel (matrice à diagonale dominante → convergence),
+  // puis Picard réévalue D(H⁺) et re-résout ; sous-relaxation 0,7 sur D.
+  // Conservation : mise à jour finale en FORME FLUX (Hⁿ + dt/A·Σ±Q) — exacte
+  // par antisymétrie des Q ; au point fixe elle coïncide avec la solution GS.
+  // Positivité : D(H amont) → 0 quand H → 0 (H⁵, H²) : une maille qui se vide
+  // coupe elle-même son export ; clampage résiduel compté dans la sonde.
   function pas(F, adj, glaceWE, dtJours) {
     var nT = F.nTri, nE = adj.n;
     if (!F.vx) { F.vx = new Float32Array(nT); F.vy = new Float32Array(nT); F.vit = new Float32Array(nT); }
     F.vx.fill(0); F.vy.fill(0); F.vit.fill(0);
-    var g    = G * G_MULT;
-    var kDef = (2 * A_GLEN / (N_GLEN + 2)) * (RHO*g)*(RHO*g)*(RHO*g);   // ·H⁵·s³
-    var kSl  = C_SL * (RHO*g)*(RHO*g)*(RHO*g);                          // ·H⁴·s³
-    if (!adj.invD) {                                  // précalcul (1 fois)
+    var g    = G;
+    var cfg  = DSMFLUX.config || CONFIG;
+    var kDef = (cfg.E||1) * (2 * A_GLEN / (N_GLEN + 2)) * (RHO*g)*(RHO*g)*(RHO*g); // ·H⁵·s³ (Glen)
+    var kLin = (cfg.c1||0) * (RHO*g);                                              // ·H²·s  (till linéaire)
+    if (!adj.invD) {
       adj.invD = new Float32Array(nE);
       for (var e0 = 0; e0 < nE; e0++) adj.invD[e0] = 1 / adj.dist[e0];
     }
-    // Tampons de travail (résidents sur adj — alloués 1 fois)
-    if (!adj._Q) {
-      adj._Q    = new Float64Array(nE);   // débit signé a→b du sous-pas (m³/s)
-      adj._dVc  = new Float64Array(nE);   // ΣdV signé a→b sur le pas (m³)
-      adj._H    = new Float64Array(nT);   // épaisseur de travail (m glace)
-      adj._R    = new Float64Array(nT);   // taux de vidange par maille (m³/s)
-      adj._X    = new Float64Array(nT);   // exports demandés du sous-pas (m³)
-      adj._fS   = new Float64Array(nT);   // facteur de positivité par maille
+    // Table maille → arêtes (construite 1 fois) : offsets CSR + id d'arête signé
+    if (!adj._cOff) {
+      var cnt = new Int32Array(nT);
+      for (var ec = 0; ec < nE; ec++) { cnt[adj.a[ec]]++; cnt[adj.b[ec]]++; }
+      adj._cOff = new Int32Array(nT + 1);
+      for (var tc = 0; tc < nT; tc++) adj._cOff[tc + 1] = adj._cOff[tc] + cnt[tc];
+      adj._cEdge = new Int32Array(adj._cOff[nT]);   // id d'arête
+      adj._cSgn  = new Int8Array(adj._cOff[nT]);    // +1 si maille = a, −1 si b
+      var fill = Int32Array.from(adj._cOff.subarray(0, nT));
+      for (var ef = 0; ef < nE; ef++) {
+        var pa = fill[adj.a[ef]]++; adj._cEdge[pa] = ef; adj._cSgn[pa] = 1;
+        var pb = fill[adj.b[ef]]++; adj._cEdge[pb] = ef; adj._cSgn[pb] = -1;
+      }
     }
-    var Q = adj._Q, dVc = adj._dVc, H = adj._H, R = adj._R, X = adj._X, fS = adj._fS;
-    dVc.fill(0);
-    for (var t0 = 0; t0 < nT; t0++) H[t0] = glaceWE[t0] > 0 ? glaceWE[t0] / DENS_G : 0;
+    if (!adj._K) {
+      adj._K   = new Float64Array(nE);   // k_e = D·len/dist (gelé par Picard)
+      adj._B   = new Float64Array(nE);   // b_e = cs·dist (part socle, m)
+      adj._H0  = new Float64Array(nT);   // Hⁿ (début de pas)
+      adj._H   = new Float64Array(nT);   // itéré courant H⁺
+      adj._dVc = new Float64Array(nE);   // dV final par arête (vitesses)
+      for (var eb = 0; eb < nE; eb++) adj._B[eb] = adj.cs[eb] * adj.dist[eb];
+    }
+    var K = adj._K, B = adj._B, H0 = adj._H0, H = adj._H, dVc = adj._dVc;
+    var cOff = adj._cOff, cEdge = adj._cEdge, cSgn = adj._cSgn;
+    for (var t0 = 0; t0 < nT; t0++) { H0[t0] = glaceWE[t0] > 0 ? glaceWE[t0] / DENS_G : 0; H[t0] = H0[t0]; }
 
-    var dtRest = dtJours * SEC_J, dtMin = Infinity, nSub = 0;
-    while (dtRest > 0) {
-      if (++nSub > MAX_SOUS_PAS) {
-        console.warn('[DSMFLUX] MAX_SOUS_PAS atteint (' + MAX_SOUS_PAS +
-          ') — reste ' + (dtRest/SEC_J).toFixed(3) + ' j non intégrés dans ce pas');
-        break;
+    // Ensemble actif (5.1) : seules les mailles englacées et leurs voisines
+    // participent — les arêtes K=0 et les mailles vides sont hors des balayages.
+    if (!adj._actC) { adj._actC = new Int32Array(nT); adj._actE = new Int32Array(nE); adj._inAct = new Uint8Array(nT); }
+    var actC = adj._actC, actE = adj._actE, inAct = adj._inAct;
+    var dtTot = dtJours * SEC_J;
+    var PICARD_MAX = 4, GS_MAX = 40, TOL_GS = 1e-3, RELAX = 0.7;
+    var TOL_CONV = 0.02;      // m — au-delà, le segment n'est PAS convergé → découpage
+    var MAX_PROF = 7;         // découpage jusqu'à dt/128 ; avertit si atteint
+    var nSeg = 0, gsTot = 0, picTot = 0, neg = 0;
+    dVc.fill(0);
+    var X  = adj._X  || (adj._X  = new Float64Array(nT));
+    var fS = adj._fS || (adj._fS = new Float64Array(nT));
+    var H0s = adj._H0s || (adj._H0s = new Float64Array(nT));   // début de segment
+
+    function solveSeg(dtSeg, prof) {
+      H0s.set(H);
+      // ── Picard : gel de K, résolution GS, réévaluation ──
+      var dMax = 1e9, nAE = 0, nAC = 0;
+      for (var pic = 0; pic < PICARD_MAX; pic++) {
+        picTot++;
+        for (var e = 0; e < nE; e++) {
+          var a = adj.a[e], b = adj.b[e];
+          var Ha = H[a], Hb = H[b];
+          if (Ha <= 0 && Hb <= 0) { K[e] = 0; continue; }
+          var s  = adj.cs[e] + (Ha - Hb) * adj.invD[e];
+          var Hup = s > 0 ? Ha : Hb;
+          if (Hup <= 0.01) { K[e] = 0; continue; }
+          var h2 = Hup * Hup;
+          var Df = kDef * h2 * h2 * Hup * s * s + kLin * h2;
+          var kNew = Df * adj.len[e] * adj.invD[e];
+          K[e] = pic === 0 ? kNew : K[e] + RELAX * (kNew - K[e]);
+        }
+        // ensemble actif du segment
+        nAE = 0; nAC = 0; inAct.fill(0);
+        for (var ez = 0; ez < nE; ez++) {
+          if (K[ez] === 0) continue;
+          actE[nAE++] = ez;
+          var za = adj.a[ez], zb = adj.b[ez];
+          if (!inAct[za]) { inAct[za] = 1; actC[nAC++] = za; }
+          if (!inAct[zb]) { inAct[zb] = 1; actC[nAC++] = zb; }
+        }
+        // Gauss-Seidel alterné à deux phases : plein, puis FOCALISÉ sur les
+        // mailles non convergées + voisines (l'amas raide se résout en local).
+        var dC = adj._dC || (adj._dC = new Float64Array(nT));
+        function balaye(liste, nL, sens) {
+          var dM = 0;
+          for (var q0 = 0; q0 < nL; q0++) {
+            var i = liste[sens ? nL - 1 - q0 : q0];
+            var Adt = F.surf[i] / dtSeg;
+            var num = Adt * H0s[i], den = Adt;
+            for (var p = cOff[i]; p < cOff[i + 1]; p++) {
+              var ei = cEdge[p], ke = K[ei];
+              if (ke === 0) continue;
+              var j = cSgn[p] > 0 ? adj.b[ei] : adj.a[ei];
+              num += ke * H[j] - cSgn[p] * ke * B[ei];
+              den += ke;
+            }
+            var Hn = num / den;
+            if (Hn < 0) Hn = 0;
+            var dl = Hn - H[i]; if (dl < 0) dl = -dl;
+            dC[i] = dl;
+            if (dl > dM) dM = dl;
+            H[i] = Hn;
+          }
+          return dM;
+        }
+        var gs = 0; dMax = 1e9;
+        while (gs < GS_MAX && dMax > TOL_GS) { gs++; dMax = balaye(actC, nAC, (gs & 1) === 0); }
+        gsTot += gs;
+        // Phase focalisée : amas non convergé + première couronne
+        var rep = 0;
+        while (dMax > TOL_GS && rep < 3) {
+          rep++;
+          var foc = adj._foc || (adj._foc = new Int32Array(nT));
+          var inF = adj._inF || (adj._inF = new Uint8Array(nT));
+          inF.fill(0); var nF = 0;
+          for (var q1 = 0; q1 < nAC; q1++) {
+            var ci = actC[q1];
+            if (dC[ci] <= TOL_GS * 0.25) continue;
+            if (!inF[ci]) { inF[ci] = 1; foc[nF++] = ci; }
+            for (var p1 = cOff[ci]; p1 < cOff[ci + 1]; p1++) {
+              var ej = cEdge[p1]; if (K[ej] === 0) continue;
+              var vj = cSgn[p1] > 0 ? adj.b[ej] : adj.a[ej];
+              if (!inF[vj]) { inF[vj] = 1; foc[nF++] = vj; }
+            }
+          }
+          if (nF === 0) break;
+          var gf = 0, dF = 1e9;
+          while (gf < 3000 && dF > TOL_GS) { gf++; dF = balaye(foc, nF, (gf & 1) === 0); }
+          gsTot += (gf * nF / (nAC || 1)) | 0;
+          dMax = balaye(actC, nAC, false); gsTot++;
+        }
+        if (pic > 0 && dMax < TOL_CONV) break;
       }
-      // 1) Débits Jacobi sur l'état courant + taux de vidange par maille
-      R.fill(0);
-      var dtCFL = Infinity;
-      for (var e = 0; e < nE; e++) {
-        var a = adj.a[e], b = adj.b[e];
-        var Ha = H[a], Hb = H[b];
-        if (Ha <= 0 && Hb <= 0) { Q[e] = 0; continue; }
-        // Pente motrice SIGNÉE a→b : socle projeté + ΔH réel / dist (métrique unique)
-        var s = adj.cs[e] + (Ha - Hb) * adj.invD[e];
-        var up, Hup;
-        if (s > 0) { up = a; Hup = Ha; } else { up = b; Hup = Hb; }
-        if (Hup <= 0.01) { Q[e] = 0; continue; }
-        var s2 = s * s, as = s > 0 ? s : -s;
-        // SIA exacte : D = (kDef·H⁵ + kSl·H⁴)·s² ; q = D·|s| [m²/s]
-        var h2 = Hup * Hup, h4 = h2 * h2;
-        var q  = (kDef * h4 * Hup + kSl * h4) * s2 * as;
-        var Qe = q * adj.len[e];                        // m³/s, module
-        Q[e] = s > 0 ? Qe : -Qe;                        // signé a→b
-        R[up] += Qe;
+      // ── Non convergé → découpage du segment (implicite sur dt/2, deux fois) ──
+      if (dMax > TOL_CONV && prof < MAX_PROF) {
+        H.set(H0s);
+        nSeg--;                        // ce segment est remplacé par ses deux moitiés
+        nSeg++; solveSeg(dtSeg / 2, prof + 1);
+        nSeg++; solveSeg(dtSeg / 2, prof + 1);
+        return;
       }
-      // 2) CFL : aucune maille ne perd plus de CFL_SAFE de son stock par sous-pas
-      for (var tc = 0; tc < nT; tc++) {
-        if (R[tc] <= 0) continue;
-        var dtc = H[tc] * F.surf[tc] / R[tc];
-        if (dtc < dtCFL) dtCFL = dtc;
-      }
-      var dtSub = dtCFL === Infinity ? dtRest : Math.min(dtRest, CFL_SAFE * dtCFL);
-      if (dtSub < dtMin) dtMin = dtSub;
-      // 3) Positivité : exports demandés vs stock, réduction au prorata
+      if (dMax > TOL_CONV) console.warn('[DSMFLUX] segment non convergé à prof ' + prof + ' (dMax=' + dMax.toFixed(3) + ' m)');
+      // ── Application en forme flux (conservation exacte) + garde de stock ──
       X.fill(0);
-      for (var e1 = 0; e1 < nE; e1++) {
-        var Qs = Q[e1]; if (Qs === 0) continue;
-        X[Qs > 0 ? adj.a[e1] : adj.b[e1]] += (Qs > 0 ? Qs : -Qs) * dtSub;
+      for (var ie = 0; ie < nAE; ie++) {
+        var eq = actE[ie];
+        var Q = K[eq] * (B[eq] + H[adj.a[eq]] - H[adj.b[eq]]);
+        var dVe = Q * dtSeg;
+        adj._Qseg[eq] = dVe;
+        X[dVe > 0 ? adj.a[eq] : adj.b[eq]] += dVe > 0 ? dVe : -dVe;
       }
-      for (var tf = 0; tf < nT; tf++) {
-        var st = H[tf] * F.surf[tf];
+      for (var tf0 = 0; tf0 < nAC; tf0++) {
+        var tf = actC[tf0];
+        var st = H0s[tf] * F.surf[tf];
         fS[tf] = X[tf] > st ? (st > 0 ? st / X[tf] : 0) : 1;
       }
-      // 4) Application conservative + cumul par arête
-      for (var e2 = 0; e2 < nE; e2++) {
-        var Q2 = Q[e2]; if (Q2 === 0) continue;
-        var a2 = adj.a[e2], b2 = adj.b[e2];
-        var up2 = Q2 > 0 ? a2 : b2, dn2 = Q2 > 0 ? b2 : a2;
-        var dV = (Q2 > 0 ? Q2 : -Q2) * dtSub * fS[up2];
-        if (dV <= 0) continue;
-        H[up2] -= dV / F.surf[up2];
-        H[dn2] += dV / F.surf[dn2];
-        dVc[e2] += Q2 > 0 ? dV : -dV;
+      for (var tr0 = 0; tr0 < nAC; tr0++) H[actC[tr0]] = H0s[actC[tr0]];
+      for (var ia = 0; ia < nAE; ia++) {
+        var ea = actE[ia];
+        var dV = adj._Qseg[ea]; if (dV === 0) continue;
+        var up = dV > 0 ? adj.a[ea] : adj.b[ea], dn = dV > 0 ? adj.b[ea] : adj.a[ea];
+        var adV = (dV > 0 ? dV : -dV) * fS[up];
+        dVc[ea] += dV > 0 ? adV : -adV;
+        H[up] -= adV / F.surf[up];
+        H[dn] += adV / F.surf[dn];
       }
-      dtRest -= dtSub;
+      for (var tw0 = 0; tw0 < nAC; tw0++) {
+        var tw = actC[tw0];
+        if (H[tw] < 0) { if (H[tw] < -1e-6) neg++; H[tw] = 0; }
+      }
     }
-    // Retour en m w.e. (écrasement complet : H est l'état exact)
-    for (var tw = 0; tw < nT; tw++) glaceWE[tw] = H[tw] > 0 ? H[tw] * DENS_G : 0;
 
-    // Vitesses : débit MOYEN réellement transféré sur le pas, porté par la source
-    var dtTot = dtJours * SEC_J;
+    if (!adj._Qseg) adj._Qseg = new Float64Array(nE);
+    nSeg = 1; solveSeg(dtTot, 0);
+    for (var tg = 0; tg < nT; tg++) glaceWE[tg] = H[tg] > 0 ? H[tg] * DENS_G : 0;
+    var dt = dtTot;   // pour le bloc vitesses
+
+    // 5) Vitesses : débit du pas par arête, porté par la maille source
     var _top3 = [];
     for (var ev = 0; ev < nE; ev++) {
       var dvs = dVc[ev]; if (dvs === 0) continue;
       var src = dvs > 0 ? adj.a[ev] : adj.b[ev], dst = dvs > 0 ? adj.b[ev] : adj.a[ev];
-      var adV = dvs > 0 ? dvs : -dvs;
+      var av = dvs > 0 ? dvs : -dvs;
       var Hs = H[src] > 0.01 ? H[src] : 0.01;
-      var u = (adV / (adj.len[ev] * dtTot) / Hs) * SEC_J * 365;   // m/an
+      var u = (av / (adj.len[ev] * dt) / Hs) * SEC_J * 365;   // m/an
       var ux = (F.centIdx[dst] % D) - (F.centIdx[src] % D);
       var uy = ((F.centIdx[dst] / D) | 0) - ((F.centIdx[src] / D) | 0);
       var ul = Math.hypot(ux, uy) || 1;
       F.vx[src] += u * ux / ul; F.vy[src] += u * uy / ul;
-      if (_top3.length < 3 || adV > _top3[_top3.length - 1].dV) {
-        _top3.push({ up: src, dn: dst, dV: Math.round(adV),
+      if (_top3.length < 3 || av > _top3[_top3.length - 1].dV) {
+        _top3.push({ up: src, dn: dst, dV: Math.round(av),
                      Hu: +H[src].toFixed(1), Hd: +H[dst].toFixed(1) });
         _top3.sort(function (x, y) { return y.dV - x.dV; });
         if (_top3.length > 3) _top3.pop();
       }
     }
     for (var t = 0; t < nT; t++) F.vit[t] = Math.hypot(F.vx[t], F.vy[t]);
-    // SONDE : top-3 transferts + glaces négatives + charge CFL du pas
-    var neg = 0; for (var tn = 0; tn < nT; tn++) if (glaceWE[tn] < 0) neg++;
-    DSMFLUX.sonde = { top: _top3, neg: neg, sousPas: nSub,
-                      dtMinS: dtMin === Infinity ? 0 : +dtMin.toFixed(1) };
+    // SONDE : itérations du solveur + clampages
+    DSMFLUX.sonde = { top: _top3, neg: neg, seg: nSeg, picard: picTot, gs: gsTot };
   }
 
   // ── Blatter-Pattyn : NON ACTIF — réservé version future ─────────
   function pasBP() { throw new Error('DSMFLUX.pasBP : Blatter-Pattyn non actif (version future)'); }
 
-  return { adjacence, pas, pasBP, A_GLEN, C_SL };
+  return { adjacence, pas, pasBP, A_GLEN, config: CONFIG };
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = { DSMFLUX };

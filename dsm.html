@@ -4,6 +4,57 @@
 <!--
   Fichier  : dsm.html
   Date     : 2026-07-15
+  v3.70    — CHAÎNE TEMPÉRATURE 2.6 PROPAGÉE À LA FONTE : (1) correction de
+             référence paléo (TEMP_REF_RECHAUF 1,3 °C, rampe 1850→2005 — la
+             calibration 1991-2020 ne réchauffe plus le préindustriel :
+             ≈ −200 m d'ELA attendus au LGM) héritée via anomaliePaleo (tMer,
+             masque, précip paléo cohérents). (2) Nébulosité mensuelle mesurée
+             (scal.bNeb + mono-thread) sur l'amplitude diurne du PDD ;
+             A_DIURNE 13,8 plein ciel (worker-glacier 1.6). Validation :
+             dsm-temp_test — BSM RMS 1,31 °C, biais amplitude 0,07 °C, été ±1.
+  v3.69    — FLUX IMPLICITE (dsm-flux 5.0 / worker 3.0) : fin du monopole CPU
+             du flux — Euler implicite Picard+Gauss-Seidel, stable au pas de
+             5 j quelle que soit l'épaisseur (l'explicite 4.x sous-cyclait au
+             CFL global : la glace LGM épaisse → milliers de sous-pas sur un
+             cœur, pool à l'arrêt). Physique identique, validée à 0,23 m près
+             sur 5 ans contre référence explicite fine. Sonde flux : {picard,
+             gs, neg}. worker-glacier 1.5.1 (renommage mC).
+  v3.68    — CORRECTION DE STRUCTURE : CYCLE DIURNE CENTRÉ (la constante fausse
+             du déficit d'ELA). La base C est calibrée comme MOYENNE journalière
+             (T0_MER validé : ~15,0 °C mesuré au niveau de la mer vs 14,9 formule ;
+             A_SAISON = amplitude des moyennes mensuelles) mais le diurne était un
+             sinus POSITIF ajouté dessus → moyenne 24 h = C + (2b/π)(L/24) ≈
+             C + 4,6 °C l'été au soleil. Diurne centré (jour au-dessus, nuit en
+             dessous, moyenne nulle) dans : worker-glacier 1.5, mono-thread,
+             tempInstant (dsm-temp 2.5). Prédiction : ELA 1894 → ~1200-1350 m,
+             dans la cible, sans régler aucune valeur.
+  v3.67    — PURGE DES BY-PASS DE TEST : l'interrupteur GLAC_FONTE est SUPPRIMÉ
+             (pas remis à 1 : supprimé) — la fonte PDD est inconditionnelle,
+             dans le pool (worker-glacier 1.4) comme dans le mono-thread.
+             dsm-flux 4.2.1 : suppression du multiplicateur de gravité de
+             debug (G_MULT). Le modèle n'a plus aucun débranchement de
+             physique.
+  v3.66    — DÉBLOCAGE WORKERS + TILL LINÉAIRE + DÉPART -30 ka : (1) glissement
+             basal LINÉAIRE u_b = c1·τ (till, Boulton & Hindmarsh 1987) dérivé
+             de la spec « 50 m/an à plat » @ surface 1 %/H 200 m — fin de la
+             saturation CFL du cubique (50 km/an en couloir → workers bloqués).
+             (2) GLAC_EPOQUE_INIT -20→-30 : 10 ka de plein froid clampé avant la
+             courbe (Roattino 2022 : lobe lyonnais au max dès 24-21 ka). Courbe
+             ΔT étendue. (3) CIBLES DE CALIBRATION (thèse Roattino fig. 5.9/5.10) :
+             front LGM domaine morainique intermédiaire 24-21 ka, domaine est
+             19 ka, Culoz 16,5 ka, retrait Maurienne 16,7-12,5 ka.
+  v3.65    — GLISSEMENT : RETOUR À LA SPÉCIFICATION « VITESSE À PLAT ». C_SL
+             n'est plus une valeur en dur : dérivé de FLUX_UB_PLAT (50 m/an
+             actuel, à monter pour le LGM) @ FLUX_PENTE_REF 2 % / FLUX_H_REF
+             200 m → C ≈ 3,4e-20 (l'ancien 3e-22 ancrait la spec à pente 10 %,
+             contresens : 0,4 m/an sur piémont — lobes à l'arrêt par
+             construction, cause majeure du « rapport 10 »).
+  v3.64    — RHÉOLOGIE PALÉO EXPOSÉE (réponse au « rapport 10 » d'avancée) :
+             FLUX_E_GLEN = 3 (accroissement de déformation, glace pléistocène,
+             sourcé) et FLUX_C_SL (Weertman, paramètre libre) passés au worker
+             flux 2.1 / dsm-flux 4.1 à l'init. Calibration cible : POSITION
+             DES MORAINES. Volet fonte : chantier EBM/tempVerif (T0_MER,
+             A_DIURNE) — voir dsm-todo.
   v3.63    — MARQUEUR TEMPS SUR LA COURBE ΔT (HUD) : point rouge qui parcourt
              la micro-courbe paléo à mesure que t_ka avance (fond capturé au
              tracé, restauré à chaque pas, point à (t_ka, anomalie du forage)).
@@ -1065,15 +1116,36 @@ const GLAC_N        = GLAC_DIM * GLAC_DIM;
 const GLAC_PAS_J    = 5;          // jours par pas
 const GLAC_ANS      = 10;         // durée accumulation
 const GLAC_NSTEPS   = Math.round(GLAC_ANS * 365 / GLAC_PAS_J);  // 730 (phase 1)
-const GLAC_EPOQUE_INIT = -20;     // ka — climat figé au LGM (phase 1 : accumulation sur place)
+const GLAC_EPOQUE_INIT = -30;     // ka — départ PRÉ-LGM : la spline paléo clampe au creux
+                                  // LGM pour t<-20 → 10 ka de plein froid pour la crue
+                                  // glaciaire AVANT la courbe (Roattino 2022 : front du lobe
+                                  // lyonnais déjà au maximum à 24-21 ka).
 // ── Phase 2 : cycle climatique complet LGM → présent (forçage accéléré) ──
 const GLAC_EPOQUE_FIN  = 0.026;   // ka — 2026 (convention : présent ≈ 0..+1)
-const GLAC_CYCLE_ANS   = Math.ceil((0.026 - (-20)) * 1000);  // TEMPS RÉEL : 20 026 années simulées
+const GLAC_CYCLE_ANS   = Math.ceil((0.026 - GLAC_EPOQUE_INIT) * 1000);  // TEMPS RÉEL : époque init → 2026
 const GLAC_KA_PAR_AN   = 0.001;   // TEMPS RÉEL : 1 an simulé = 1 an de climat (compression 200:1 SUPPRIMÉE)
 const GLAC_NSTEPS2     = GLAC_CYCLE_ANS * Math.round(365/GLAC_PAS_J);  // pas de la phase 2 (GLAC_NJOURS déclaré plus bas)
 const GLAC_NSTEPS_TOT  = GLAC_NSTEPS + GLAC_NSTEPS2;
 const GLAC_FOEHN_RECALC_KA = 5;   // recalcul foehn (capVent dépend de t_ka) tous les 5 ka
 const FLUX_PENTE_MODE = 'A';   // 'A' = centroïdes | 'B' = contact inter-triangles
+const FLUX_E_GLEN     = 3;     // facteur d'accroissement de la déformation — glace
+                               // pléistocène (poussières, fabrique) : ~3× la loi de
+                               // Glen propre. Standard modèles paléo (EISMINT, PISM,
+                               // Paterson 1991). 1 = glace tempérée moderne pure.
+const FLUX_UB_PLAT    = 50;    // m/an — SPÉCIFICATION (Eric) : vitesse de glissement
+                               // « à plat » en régime ACTUEL. Au LGM : « certainement
+                               // bien plus » — MONTER CETTE VALEUR pour calibrer
+                               // l'avancée des lobes (juge : moraines).
+const FLUX_PENTE_REF  = 0.01;  // pente de SURFACE du « plat » de référence : 1 % =
+                               // pente mesurée des surfaces de lobes de piémont (le
+                               // lit peut être à 0,00 % ou remontant — la démo « train »
+                               // du 2026-07-15 : la poussée passe par l'épaisseur).
+const FLUX_H_REF      = 200;   // m — épaisseur de référence de la spécification.
+// Glissement till LINÉAIRE (u_b = c1·τ, Boulton & Hindmarsh 1987) DÉRIVÉ de la
+// spec — u ∝ τ : 50 m/an à plat, ~500 m/an à 10 % de pente de surface. Pas
+// d'explosion cubique (l'ancienne dérivation Weertman τ³ donnait ~50 km/an en
+// couloir raide → sous-cyclage CFL par milliers → workers saturés, corrigé v3.66) :
+const FLUX_C1 = (FLUX_UB_PLAT/(365*86400)) / (917*9.81*FLUX_H_REF*FLUX_PENTE_REF);
 const GLAC_NJOURS   = Math.floor(360 / GLAC_PAS_J) + 1;        // 73 tranches de 5 j (jours 1,6,…,361)
 const GLAC_PRECIP   = 1500;       // mm/an précipitations de base ACTUELLES (versant neutre)
 const GLAC_PRECIP_CC = 0.045;     // /°C — précip × exp(CC·ΔT) : Clausius-Clapeyron tempérée
@@ -1095,7 +1167,6 @@ const GLAC_TAU_TASS   = 10.0;     // ans — constante de temps tassement neige�
 const GLAC_K_TASS     = GLAC_PAS_J/365/GLAC_TAU_TASS;  // fraction convertie par pas (d/τ)
 const GLAC_DDF_NEIGE  = 0.00017;  // m w.e./(°C·h) ≈ 4 mm w.e./°C·j (PDD neige)
 const GLAC_DDF_GLACE  = 0.00033;  // m w.e./(°C·h) ≈ 8 mm w.e./°C·j (PDD glace)
-const GLAC_FONTE      = 1;        // 1 = fonte PDD active ; 0 = fonte DÉBRANCHÉE (test transport pur — dépôt et tassement conservés)
 // Réservoirs internes : TOUS en m ÉQUIVALENT EAU (w.e.), PAR TRIANGLE du filet.
 
 // ── Filet : budget de triangles à rebours des workers ──
@@ -1276,28 +1347,29 @@ function glacierAccumPas(elev1024, jour, t_ka) {
     var fDT = glacierFoehnDT[ic];
     // T constante hors diurne (nuit comprise) + amplitude diurne
     var C = tempInstant(ic, -1, jour, t_ka, rise, setH, false) + fDT;
-    var b = TEMP_A_DIURNE * (card[ic]/255);
+    var b = TEMP_A_DIURNE * nebJour(jour) * (card[ic]/255);
 
-    // PDD analytique 24 h (°C·h) — primitive exacte du sinus tronqué :
-    //   nuit (24−L) : max(0,C)·(24−L)
-    //   jour : L·[ C≥0 → C + 2b/π ; C+b≤0 → 0 ; sinon C(1−2φ1)+ (2b/π)cosπφ1, φ1=asin(−C/b)/π ]
-    var degH = (C>0 ? C*(24-L) : 0);
+    // PDD analytique 24 h (°C·h) — diurne CENTRÉ (parité worker-glacier 1.5) :
+    // C = MOYENNE journalière ; nuit = C−m, jour = C−m+b·sin, m = (2b/π)·(L/24).
+    var mC = (L>0 && b>0) ? (2*b/Math.PI)*(L/24) : 0;
+    var Cn = C - mC;
+    var degH = (Cn>0 ? Cn*(24-L) : 0);
     if (L>0 && b>0) {
-      if (C>=0)          degH += (C + 2*b/Math.PI) * L;
-      else if (C+b>0) {
-        var f1 = Math.asin(-C/b)/Math.PI;
-        degH += (C*(1-2*f1) + (2*b/Math.PI)*Math.cos(Math.PI*f1)) * L;
+      if (Cn>=0)          degH += (Cn + 2*b/Math.PI) * L;
+      else if (Cn+b>0) {
+        var f1 = Math.asin(-Cn/b)/Math.PI;
+        degH += (Cn*(1-2*f1) + (2*b/Math.PI)*Math.cos(Math.PI*f1)) * L;
       }
-    } else if (L>0 && C>0) degH += C*L;
+    } else if (L>0 && Cn>0) degH += Cn*L;
 
     // 1. Dépôt (m w.e.) : fraction neige sur T nocturne = C
     var precEff = precJour * F.cosT[t] * glacierFoehnC[ic];
     var fSnow = C <= 0 ? 1 : (C < 2 ? (2-C)/2 : 0);
     filetNeige[t] += precEff * fSnow;
 
-    // 2. Fonte PDD : degrés-heures/jour × 5 j (GLAC_FONTE=0 : débranchée)
+    // 2. Fonte PDD : degrés-heures/jour × 5 j
     var dh = degH * GLAC_PAS_J;
-    if(dh > 0 && GLAC_FONTE) {
+    if(dh > 0) {
       var fN = dh * GLAC_DDF_NEIGE;
       if(fN <= filetNeige[t]) {
         filetNeige[t] -= fN;
@@ -1450,7 +1522,7 @@ function glacierPoolInit(){
   return GLACPOOL.init(n, { z:z, fDT:fDT, fC:fC, cosT:F.cosT, actif:F.actif,
     wSun73:glacierTablesWsun(),
     K:{ lapse:TEMP_LAPSE, aDiurne:TEMP_A_DIURNE, pasJ:GLAC_PAS_J,
-        ddfN:GLAC_DDF_NEIGE, ddfG:GLAC_DDF_GLACE, kTass:GLAC_K_TASS, fonte:GLAC_FONTE } });
+        ddfN:GLAC_DDF_NEIGE, ddfG:GLAC_DDF_GLACE, kTass:GLAC_K_TASS } });
 }
 function glacierPoolFoehn(){
   var F=glacierFilet, n=F.nTri, fC=new Float32Array(n), fDT=new Float32Array(n);
@@ -1519,7 +1591,7 @@ function glacierLoop(elev1024) {
   var latP=(GEO.latMax+GEO.latMin)/2, lonP=(GEO.lonMax+GEO.lonMin)/2;
   var rhP=sunRiseSet(jour, orbP.e, orbP.eps, pibarP, latP*Math.PI/180, lonP);
   var riseP=rhP&&rhP.rise>=0?rhP.rise:12, setP=rhP&&rhP.rise>=0?rhP.set:12;
-  var scal={ tMer:TEMP_T0_MER+anomaliePaleo(t_ka,latP), 
+  var scal={ tMer:TEMP_T0_MER+anomaliePaleo(t_ka,latP), bNeb:nebJour(jour), 
              tSaison:TEMP_A_SAISON*Math.cos(2*Math.PI*(jour-TEMP_JOUR_ETE)/365),
              L:Math.max(0,setP-riseP),
              precJour:(GLAC_PRECIP/1000)*GLAC_PAS_J/365*Math.exp(GLAC_PRECIP_CC*anomaliePaleo(t_ka,latP)),
@@ -1559,7 +1631,7 @@ GLACPOOL.pas(scal, filetNeige, filetGlace).then(function(){
   
 window._glacAdj = DSMFLUX.adjacence(glacierFilet, ombreResY, FLUX_PENTE_MODE);
 
-  return FLUXWORKER.init(glacierFilet, window._glacAdj);
+  return FLUXWORKER.init(glacierFilet, window._glacAdj, { E: FLUX_E_GLEN, c1: FLUX_C1 });
   })();
   var _vAv=0; for(var _q=0;_q<glacierFilet.nTri;_q++) _vAv+=filetGlace[_q]*glacierFilet.surf[_q];
   _fluxPrep.then(function(){ return FLUXWORKER.pas(glacierFilet, filetGlace, GLAC_PAS_J); }).then(function(){
@@ -1752,7 +1824,7 @@ function dessinerDeltaC() {
   var nom    = nord ? 'GRIP 70°N' : 'Vostok 78°S';
   var table  = nord ? (typeof TEMP_PALEO_NORD!=='undefined'?TEMP_PALEO_NORD:null)
                     : (typeof TEMP_PALEO_SUD !=='undefined'?TEMP_PALEO_SUD :null);
-  var TKA_MIN=-20, TKA_MAX=2;           // axe temps en ka
+  var TKA_MIN=GLAC_EPOQUE_INIT, TKA_MAX=2; // axe temps en ka (couvre le départ pré-LGM)
   var W=cv.width, H=cv.height, ctx=cv.getContext('2d');
   var PADL=4, PADR=4, PADT=4, PADB=4;
   ctx.clearRect(0,0,W,H);
