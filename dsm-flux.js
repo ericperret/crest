@@ -8,6 +8,8 @@
              rejeu des volumes par phase de l'année entre deux recalages.
    AUTEUR  : Eric P.
    RELECTURE : Opus 5.5
+   LICENCE : CC BY-NC 4.0 — source à citer : https://github.com/ericperret/crest/
+             usage commercial interdit sauf accord écrit de l'auteur (voir LICENSE)
    DÉPEND  : aucun (même code dans le Worker de dsm-worker-flux.js)
    EXPOSE  : DSMFLUX_FABRIQUE, DSMFLUX { adjacence, pas, pasBP, A_GLEN,
              config, sonde, progres }

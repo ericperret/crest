@@ -6,6 +6,8 @@
              légende de température (bouton Temp).
    AUTEUR  : Eric P.
    RELECTURE : Opus 5.5
+   LICENCE : CC BY-NC 4.0 — source à citer : https://github.com/ericperret/crest/
+             usage commercial interdit sauf accord écrit de l'auteur (voir LICENSE)
    DÉPEND  : dsm.html (render, drawLegend, ctrlTka, ctrlAnnee, srcX,
              srcY, srcPPx, imgW, imgH, DISP, ctx, coordEl, GEO),
              dsm-ombre.js (ombreElev1024, OMBRE_DIM)

@@ -6,6 +6,8 @@
              courbes de niveau ; puis installation dans le visualiseur.
    AUTEUR  : Eric P.
    RELECTURE : Opus 5.5
+   LICENCE : CC BY-NC 4.0 — source à citer : https://github.com/ericperret/crest/
+             usage commercial interdit sauf accord écrit de l'auteur (voir LICENSE)
    DÉPEND  : dsm.html (imgW, imgH, GEO, elevGrid, oscHypso, oscContour,
              oscWater, srcX, srcY, srcPPx, DISP, render, resizeWrap,
              makeHypsoLUT, dsmReset, resetSim), dsm-temp.js (tempInit)

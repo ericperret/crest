@@ -7,6 +7,8 @@
              dsm.html.
    AUTEUR  : Eric P.
    RELECTURE : Opus 5.5
+   LICENCE : CC BY-NC 4.0 — source à citer : https://github.com/ericperret/crest/
+             usage commercial interdit sauf accord écrit de l'auteur (voir LICENSE)
    DÉPEND  : aucun (services de tuiles externes fournis par l'appelant)
    EXPOSE  : DsmCarte (constructeur)
    ═══════════════════════════════════════════════════════════════════ */

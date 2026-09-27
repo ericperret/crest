@@ -6,6 +6,8 @@
              facteur de précipitation fC et un ΔT moyen annuel par pixel.
    AUTEUR  : Eric P.
    RELECTURE : Opus 5.5
+   LICENCE : CC BY-NC 4.0 — source à citer : https://github.com/ericperret/crest/
+             usage commercial interdit sauf accord écrit de l'auteur (voir LICENSE)
    DÉPEND  : aucun (UMD : DsmFoehn en navigateur, module.exports sous Node)
    EXPOSE  : DsmFoehn { foehnCalc, foehnComputeFC, sb2004Field, foehnDeltaT,
              foehnCreteAmont, foehnWindDirection, foehnWindVector,

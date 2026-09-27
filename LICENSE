@@ -1,0 +1,46 @@
+FICHIER : LICENSE - v27/09/2026
+AUTEUR  : Eric P.
+RELECTURE : Opus 5.5
+
+crest — Copyright (c) 2026 Eric P.
+Source : https://github.com/ericperret/crest/
+
+────────────────────────────────────────────────────────────────────────
+1. Licence
+
+Ce projet (code source, documentation et fichiers associés) est mis à
+disposition selon les termes de la licence Creative Commons
+Attribution – Pas d'Utilisation Commerciale 4.0 International
+(CC BY-NC 4.0).
+
+  Résumé    : https://creativecommons.org/licenses/by-nc/4.0/deed.fr
+  Texte légal : https://creativecommons.org/licenses/by-nc/4.0/legalcode.fr
+
+2. Attribution obligatoire
+
+Toute réutilisation, modification ou redistribution, totale ou partielle,
+doit mentionner de façon visible :
+
+  crest — Eric P. — https://github.com/ericperret/crest/
+
+et indiquer si des modifications ont été apportées.
+
+3. Utilisation commerciale
+
+Toute utilisation commerciale est interdite sans l'accord écrit préalable
+de l'auteur. Une licence commerciale distincte peut être accordée sur
+demande via le dépôt ci-dessus.
+
+4. Données et services tiers
+
+Cette licence ne couvre ni les données ni les services externes utilisés
+par le logiciel, qui restent soumis à leurs propres conditions :
+  - Copernicus DEM GLO-30 : © DLR e.V. 2010-2014 et © Airbus Defence and
+    Space GmbH 2014-2018, fourni dans le cadre de COPERNICUS par l'Union
+    européenne et l'ESA ;
+  - imagerie Esri / Maxar, étiquettes CARTO et © OpenStreetMap.
+
+5. Absence de garantie
+
+Le logiciel est fourni « tel quel », sans garantie d'aucune sorte ; les
+résultats de simulation sont indicatifs.

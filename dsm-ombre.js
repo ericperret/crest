@@ -7,6 +7,8 @@
              remplissage d'eau (clic droit).
    AUTEUR  : Eric P.
    RELECTURE : Opus 5.5
+   LICENCE : CC BY-NC 4.0 — source à citer : https://github.com/ericperret/crest/
+             usage commercial interdit sauf accord écrit de l'auteur (voir LICENSE)
    DÉPEND  : dsm-astro.js (ASTRO_INJECT, orbital, sunRiseSet, sunPos),
              dsm.html (GEO, imgW, imgH, elevGrid, oscHypso, currentOSC, ctx,
              canvas, render, vue courante, panneau ctrl*)

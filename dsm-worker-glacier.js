@@ -6,6 +6,8 @@
              triangles.
    AUTEUR  : Eric P.
    RELECTURE : Opus 5.5
+   LICENCE : CC BY-NC 4.0 — source à citer : https://github.com/ericperret/crest/
+             usage commercial interdit sauf accord écrit de l'auteur (voir LICENSE)
    DÉPEND  : aucun (noyau pur ; les tables viennent de dsm.html)
    EXPOSE  : GLACIER { KDEF, degresHeures, pasTranche, fusionSondes,
              volumes, _interpELA }, GLACPOOL { init, majFoehn, majSoleil,

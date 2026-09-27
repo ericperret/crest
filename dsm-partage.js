@@ -6,6 +6,8 @@
              de bassin.
    AUTEUR  : Eric P.
    RELECTURE : Opus 5.5
+   LICENCE : CC BY-NC 4.0 — source à citer : https://github.com/ericperret/crest/
+             usage commercial interdit sauf accord écrit de l'auteur (voir LICENSE)
    DÉPEND  : aucun (grille d'altitude 1024² fournie par l'appelant)
    EXPOSE  : DSMPARTAGE { tracer, dessiner, drainage, bassins, invalider }
    CONVENTIONS

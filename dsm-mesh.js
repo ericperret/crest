@@ -8,6 +8,8 @@
              aucune table de hachage d'arêtes, O(nCellules).
    AUTEUR  : Eric P.
    RELECTURE : Opus 5.5
+   LICENCE : CC BY-NC 4.0 — source à citer : https://github.com/ericperret/crest/
+             usage commercial interdit sauf accord écrit de l'auteur (voir LICENSE)
    DÉPEND  : aucun
    EXPOSE  : DSMMESH { construire, fusionner, pixNorm, stats }
    CONVENTIONS : sommets en (colonne, ligne, altitude) ; normales en

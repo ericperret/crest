@@ -5,6 +5,8 @@
              du relief, dans un calque plein écran.
    AUTEUR  : Eric P.
    RELECTURE : Opus 5.5
+   LICENCE : CC BY-NC 4.0 — source à citer : https://github.com/ericperret/crest/
+             usage commercial interdit sauf accord écrit de l'auteur (voir LICENSE)
    DÉPEND  : filet F (triOfPix), grille d'altitude 1024²
    EXPOSE  : DSMFIL3D { construire, ouvrir, fermer }
    ═══════════════════════════════════════════════════════════════════ */

@@ -5,6 +5,8 @@
              front sur sol gelé. Produit c1Tab et glissTab pour DSMFLUX.
    AUTEUR  : Eric P.
    RELECTURE : Opus 5.5
+   LICENCE : CC BY-NC 4.0 — source à citer : https://github.com/ericperret/crest/
+             usage commercial interdit sauf accord écrit de l'auteur (voir LICENSE)
    DÉPEND  : aucun (calcul pur : Worker, fil principal ou Node)
    EXPOSE  : BASAL { K, R_GELE, R_TEMPERE, R_SURGE, tPmp, tBasEquilibre,
              tauThermique, fonteFriction, c1DepuisVitesse,
