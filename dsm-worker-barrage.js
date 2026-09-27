@@ -2,7 +2,10 @@
    FICHIER : dsm-worker-barrage.js - v27/09/2026
    OBJET   : calcul de l'onde de rupture instantanée d'un barrage le long
              d'une trajectoire de référence (chemin du « robinet »), et
-             tracé des isochrones du front minute par minute.
+             tracé des isochrones du front minute par minute ; envoi en
+             cours de calcul des pixels nouvellement atteints et des
+             niveaux de rive (affichage vivant), clichés des niveaux à la
+             minute (rejeu), enveloppe des niveaux maximaux.
              La source du Worker est BARRAGE_FABRIQUE.toString() : un seul
              code de calcul, ni importScripts ni dépendance réseau,
              ouverture file:// possible.
@@ -12,6 +15,8 @@
              usage commercial interdit sauf accord écrit de l'auteur (voir LICENSE)
    DÉPEND  : aucune (données reçues par message)
    EXPOSE  : BARRAGE_FABRIQUE, BARRAGEWORKER { lancer, arreter }
+   MESSAGES : « geom » {M, lit} ; « instant » {t, frontKm, q, reste, p, a,
+             m, g, prof} ; « fin » {res} ; « erreur » {msg}.
    MODÈLES (publiés, aucun paramètre inventé) :
      · Saint-Venant 1D (1871), forme conservative volume / vitesse, sur
        sections en travers extraites du DSM ;
@@ -52,7 +57,8 @@ function BARRAGE_FABRIQUE() {
   var H_ARRIVEE = 0.10;       /* m : lame d'eau qui date l'arrivée du front */
   var CFL = 0.5;
   var DT_MAX = 10;            /* s */
-  var DT_PEINT = 10;          /* s : pas de mise à jour de l'emprise */
+  var DT_CLICHE = 60;         /* s : pas des clichés de niveaux (rejeu) */
+  var DT_INSTANT_MS = 250;    /* ms réelles entre deux envois « instant » */
   var T_MAX = 48 * 3600;      /* s */
   var T_CALME = 3600;         /* s sans pixel nouveau → fin */
   var T_DEMARRAGE = 30;       /* s : transitoire numérique de la discontinuité initiale exclu du débit de pointe */
@@ -206,13 +212,21 @@ function BARRAGE_FABRIQUE() {
 
   /* ── calcul ── E : {elev, W, H, dx, dy, chemin, fin ('mer'|'bord'|
      'fermé'), mode ('bib'|'manuel'), iDigue (pixel du barrage), V (m³),
-     h0 (m), Ldigue (m, 0 = inconnue)}, progres(t, fKm) → T : trajectoire
-     et niveaux de retenue, sections, bief de retenue prismatique,
-     intégration de Saint-Venant (Stelling & Duinmeijer), emprise datée
-     pixel par pixel, choix des isochrones (pas de 1 min allongé tant que
-     le front avance de moins de ECART_ISO_PX pixels) → S : {arr Float32
-     (s, -1 sec), iso [{t, pas, px Int32, lab, trans}], info}. */
-  function calcul(E, progres) {
+     h0 (m), Ldigue (m, 0 = inconnue)}, envoyer(message, transferts) → T :
+     trajectoire et niveaux de retenue, sections, bief de retenue
+     prismatique, intégration de Saint-Venant (Stelling & Duinmeijer),
+     emprise datée pixel par pixel à chaque pas de calcul, niveau de chaque
+     rive à chaque pas, envois « geom » (une fois) puis « instant » (toutes
+     les DT_INSTANT_MS), clichés des niveaux toutes les DT_CLICHE s ; arrêt
+     quand plus aucun pixel n'est atteint pendant T_CALME (onde amortie :
+     l'emprise est l'enveloppe complète, vidange totale comprise) ; choix
+     des isochrones (pas de 1 min allongé tant que le front avance de moins
+     de ECART_ISO_PX pixels) → S : {arr Float32 (s, -1 sec), iso [{t, pas,
+     px Int32, lab, trans}], wp/wm/wg (pixels mouillés dans l'ordre
+     d'arrivée : indice, rive 2·station+côté, seuil de connexion), snaps
+     Uint16 (nSnap × 2M lames en cm au-dessus du lit), lit Float32 (M),
+     maxNiv Float32 (2M, niveau maximal de rive), info}. */
+  function calcul(E, envoyer) {
     var z = E.elev, W = E.W, H = E.H, dx = E.dx, dy = E.dy, ch = E.chemin, N = W * H;
     var np = ch.length, i, j, s, p;
     var pixM = Math.sqrt(dx * dy);
@@ -303,6 +317,8 @@ function BARRAGE_FABRIQUE() {
         tPlan[s * K1 + kk] = cA; tMou[s * K1 + kk] = cS;
       }
     }
+
+    envoyer({ type: 'geom', M: M, lit: Float32Array.from(lit) });
 
     /* largeur de brèche */
     var Bd = E.Ldigue > 0 ? E.Ldigue : 0;
@@ -403,27 +419,82 @@ function BARRAGE_FABRIQUE() {
       }
       for (var s3 = 0; s3 < M; s3++) { ptr[2 * s3] = debG[0][s3]; ptr[2 * s3 + 1] = debG[1][s3]; }
     })();
-    var tDernier = 0, nMouilles = 0;
-    function peindre(t) {
+    var tDernier = 0, levR = new Float64Array(2 * M);
+    var capW = 1 << 16, nW = 0, wp = new Int32Array(capW), wm = new Int32Array(capW), wg = new Float32Array(capW);
+
+    /* ── ajouter ── E : pixel atteint, rive (2·station + côté) → T : ajout
+       aux listes d'arrivée, doublement des tableaux à saturation → S :
+       wp, wm, wg, nW. */
+    function ajouter(p, m) {
+      if (nW === capW) {
+        capW *= 2;
+        var a1 = new Int32Array(capW); a1.set(wp); wp = a1;
+        var a2 = new Int32Array(capW); a2.set(wm); wm = a2;
+        var a3 = new Float32Array(capW); a3.set(wg); wg = a3;
+      }
+      wp[nW] = p; wm[nW] = m; wg[nW] = sig[p]; nW++;
+    }
+
+    /* ── rives ── E : état (η, q̄, A, B) → T : niveau de chaque rive de
+       chaque station : η ± Δy/2, Δy = C·v²·B·|κ|/g (C = 0,5 fluvial, 1
+       torrentiel, USACE EM 1110-2-1601), demi-surélévation plafonnée à
+       v²/2g, + sur la rive extérieure du virage, − sur l'intérieure ;
+       station sèche (lame < H_SEC) → −∞ → S : levR (indice 2·s + côté,
+       côté 0 = gauche, 1 = droite). */
+    function rives() {
       for (var s = 0; s < M; s++) {
-        var n = nR + s; if (eta[n] - bed[n] < H_ARRIVEE) continue;
+        var n = nR + s;
+        if (eta[n] - bed[n] < H_SEC) { levR[2 * s] = -Infinity; levR[2 * s + 1] = -Infinity; continue; }
         var uu = A[n] > 0 ? qb[n] / A[n] : 0, u2 = uu * uu;
         var Fr = Math.abs(uu) / Math.sqrt(G * Math.max(A[n] / Bn[n], 1e-6));
         var dY = (Fr < 1 ? 0.5 : 1.0) * u2 * Bn[n] * Math.abs(geo.kappa[i0 + s]) / G;
         var demi = Math.min(0.5 * dY, u2 / (2 * G));
         var ext = geo.kappa[i0 + s] > 0 ? -1 : 1;      /* κ>0 : virage à gauche, rive extérieure à droite */
+        levR[2 * s] = eta[n] + (ext === 1 ? demi : -demi);
+        levR[2 * s + 1] = eta[n] + (ext === -1 ? demi : -demi);
+      }
+    }
+
+    /* ── peindre ── E : instant t, levR → T : pour chaque rive d'une
+       station mouillée (lame ≥ H_ARRIVEE) dont le niveau dépasse son
+       maximum passé, avance le pointeur de la liste triée par seuil de
+       connexion tant que seuil + H_ARRIVEE < niveau ; pixel jamais atteint
+       → date t et ajout à la liste d'arrivée → S : arr, maxNiv, wp/wm/wg. */
+    function peindre(t) {
+      for (var s = 0; s < M; s++) {
+        var n = nR + s; if (eta[n] - bed[n] < H_ARRIVEE) continue;
         for (var cc3 = 0; cc3 < 2; cc3++) {
-          var sgn = cc3 === 0 ? 1 : -1, lev = eta[n] + (sgn === ext ? demi : -demi), m = 2 * s + cc3;
+          var m = 2 * s + cc3, lev = levR[m];
           if (lev <= maxNiv[m]) continue;
           maxNiv[m] = lev;
           var L = listeG[cc3], fin = debG[cc3][s + 1], jp = ptr[m];
           while (jp < fin && sig[L[jp]] + H_ARRIVEE < lev) {
-            if (arr[L[jp]] < 0) { arr[L[jp]] = t; nMouilles++; tDernier = t; }
+            var q = L[jp];
+            if (arr[q] < 0) { arr[q] = t; ajouter(q, m); tDernier = t; }
             jp++;
           }
           ptr[m] = jp;
         }
       }
+    }
+
+    /* clichés : lame de chaque rive au-dessus du lit de sa station, en cm
+       (Uint16, 0 = sec, plafond 655,35 m) */
+    var M2 = 2 * M, nSnap = 0, capS = 64, snaps = new Uint16Array(M2 * capS), prof = new Uint16Array(M2);
+    /* ── profondeurs ── E : levR → T : (niveau − lit) × 100 arrondi, borné
+       à [0, 65535] → S : tableau de 2M lames (cm). */
+    function profondeurs(out) {
+      for (var m = 0; m < M2; m++) {
+        var l = levR[m];
+        var d = l === -Infinity ? 0 : Math.round((l - lit[m >> 1]) * 100);
+        out[m] = d < 0 ? 0 : d > 65535 ? 65535 : d;
+      }
+    }
+    /* ── cliche ── E : levR → T : ajoute un cliché de lames, doublement
+       du tampon à saturation → S : snaps, nSnap. */
+    function cliche() {
+      if (nSnap === capS) { capS *= 2; var s2 = new Uint16Array(M2 * capS); s2.set(snaps); snaps = s2; }
+      profondeurs(prof); snaps.set(prof, nSnap * M2); nSnap++;
     }
 
     /* ── pasCFL ── E : état → T : Courant ≤ CFL sur les nœuds mouillés,
@@ -489,7 +560,25 @@ function BARRAGE_FABRIQUE() {
     }
 
     /* intégration */
-    var t = 0, tPeint = 0, front = -1, frontMin = [0], qMax = 0, Vsortie = 0;
+    var t = 0, front = -1, frontMin = [0], qMax = 0, Vsortie = 0, nEnv = 0;
+    /* ── frontKm ── E : front (station) → T : abscisse curviligne depuis la
+       brèche → S : km. */
+    function frontKm() { return front < 0 ? 0 : (geo.cum[i0 + front] - geo.cum[i0]) / 1000; }
+    /* ── instant ── E : t → T : volume restant dans la retenue, débit à la
+       brèche, pixels atteints depuis le dernier envoi (indice, date, rive,
+       seuil), lames de rive courantes ; message « instant », tampons
+       transférés → S : aucune. */
+    function instant(t) {
+      var reste = 0; for (var i = 0; i < nR; i++) reste += Vn[i];
+      var cour = new Uint16Array(M2); profondeurs(cour);
+      var mp = wp.slice(nEnv, nW), ma = new Float32Array(nW - nEnv);
+      for (i = 0; i < mp.length; i++) ma[i] = arr[mp[i]];
+      var msg = { type: 'instant', t: t, frontKm: frontKm(), q: Math.abs(Q[nR]), reste: reste / V0,
+                  p: mp, a: ma, m: wm.slice(nEnv, nW), g: wg.slice(nEnv, nW), prof: cour };
+      nEnv = nW;
+      envoyer(msg, [msg.p.buffer, msg.a.buffer, msg.m.buffer, msg.g.buffer, msg.prof.buffer]);
+    }
+    rives(); cliche();
     var mesure = Date.now();
     while (t < T_MAX) {
       var dt = pasCFL();
@@ -499,12 +588,13 @@ function BARRAGE_FABRIQUE() {
       t += dt;
       if (t >= T_DEMARRAGE) { var qb0 = Math.abs(Q[nR]); if (qb0 > qMax) qMax = qb0; }
       for (s = M - 1; s > front; s--) if (eta[nR + s] - bed[nR + s] >= H_ARRIVEE) { front = s; break; }
-      if (t - tPeint >= DT_PEINT) { peindre(t); tPeint = t; }
-      while (frontMin.length * 60 <= t) frontMin.push(front < 0 ? 0 : geo.cum[i0 + front] - geo.cum[i0]);
+      rives(); peindre(t);
+      while (nSnap * DT_CLICHE <= t) cliche();
+      while (frontMin.length * 60 <= t) frontMin.push(frontKm() * 1000);
       if (t > 600 && t - tDernier > T_CALME) break;
-      if (Date.now() - mesure > 400 && progres) { mesure = Date.now(); progres(t, frontMin[frontMin.length - 1] / 1000); }
+      if (Date.now() - mesure > DT_INSTANT_MS) { mesure = Date.now(); instant(t); }
     }
-    peindre(t);
+    instant(t);
     var tFin = t;
 
     /* isochrones : plus petit pas de PAS_ISO, jamais inférieur au pas
@@ -544,10 +634,13 @@ function BARRAGE_FABRIQUE() {
     }
     return {
       arr: arr, iso: iso,
+      wp: wp.slice(0, nW), wm: wm.slice(0, nW), wg: wg.slice(0, nW),
+      snaps: snaps.slice(0, nSnap * M2), nSnap: nSnap, dtSnap: DT_CLICHE, M: M,
+      lit: Float32Array.from(lit), maxNiv: Float32Array.from(maxNiv),
       info: {
         zres: zres, zf: zf, Bd: Bd, Lres: Lres, qMax: qMax, tFin: tFin, V0: V0, Vsortie: Vsortie,
         frontKm: (frontMin[nMin] || 0) / 1000, Vreste: Vn.reduce(function (a, b) { return a + b; }, 0),
-        frontMin: frontMin, fin: E.fin, nMouilles: nMouilles,
+        frontMin: frontMin, fin: E.fin, nMouilles: nW,
         breche: ch[i0], atteintBout: front >= M - 1, parement: parement, mode: E.mode
       }
     };
@@ -563,22 +656,23 @@ const BARRAGEWORKER = (function () {
   var _w = null;
 
   /* ── source ── E : aucune → T : fabrique + onmessage (calcul, messages
-     « progres » puis « fin » avec tampons transférés, « erreur ») → S :
-     texte du Worker. */
+     « geom », « instant » puis « fin » avec tampons transférés, « erreur »)
+     → S : texte du Worker. */
   function source() {
     return 'var BARRAGE=(' + BARRAGE_FABRIQUE.toString() + ')();\n' +
-      'onmessage=function(e){try{var R=BARRAGE.calcul(e.data,function(t,f){postMessage({type:"progres",t:t,frontKm:f});});' +
-      'var tr=[R.arr.buffer];R.iso.forEach(function(i){tr.push(i.px.buffer);});' +
+      'onmessage=function(e){try{var R=BARRAGE.calcul(e.data,function(m,tr){postMessage(m,tr||[]);});' +
+      'var tr=[R.arr.buffer,R.wp.buffer,R.wm.buffer,R.wg.buffer,R.snaps.buffer,R.lit.buffer,R.maxNiv.buffer];' +
+      'R.iso.forEach(function(i){tr.push(i.px.buffer);});' +
       'postMessage({type:"fin",res:R},tr);}catch(x){postMessage({type:"erreur",msg:String(x&&x.message||x)});}};';
   }
 
-  /* ── lancer ── E : entrées de calcul, rappels progres(t, fKm),
-     fin(res), erreur(msg) → T : arrête un calcul en cours, démarre le
-     Worker (ou calcule sur place) → S : aucune. */
-  function lancer(E, progres, fin, erreur) {
+  /* ── lancer ── E : entrées de calcul, rappels message(m) (« geom »,
+     « instant »), fin(res), erreur(msg) → T : arrête un calcul en cours,
+     démarre le Worker (ou calcule sur place) → S : aucune. */
+  function lancer(E, message, fin, erreur) {
     arreter();
     if (typeof Worker === 'undefined' || typeof Blob === 'undefined') {
-      try { fin(BARRAGE_FABRIQUE().calcul(E, progres)); } catch (x) { erreur(String(x.message || x)); }
+      try { fin(BARRAGE_FABRIQUE().calcul(E, function (m) { message(m); })); } catch (x) { erreur(String(x.message || x)); }
       return;
     }
     var url = URL.createObjectURL(new Blob([source()], { type: 'application/javascript' }));
@@ -586,9 +680,9 @@ const BARRAGEWORKER = (function () {
     URL.revokeObjectURL(url);
     _w.onmessage = function (e) {
       var m = e.data;
-      if (m.type === 'progres') progres(m.t, m.frontKm);
-      else if (m.type === 'fin') { arreter(); fin(m.res); }
+      if (m.type === 'fin') { arreter(); fin(m.res); }
       else if (m.type === 'erreur') { arreter(); erreur(m.msg); }
+      else message(m);
     };
     _w.postMessage(E, [E.elev.buffer]);
   }

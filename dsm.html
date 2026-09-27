@@ -7,7 +7,8 @@
                paléoclimatique d'un glacier : hypsométrie, courbes, ombres,
                insolation, température, lignes de partage, filet adaptatif,
                bilan de masse, écoulement, glissement basal, foehn ; robinet
-               et rupture de barrage (clic droit) ; vidéo
+               et rupture de barrage (clic droit, barrages de l'emprise
+               posés sur la carte, onde vivante, rejeu, export Shapefile) ; vidéo
                des ombres, enregistrement, profileur.
      AUTEUR  : Eric P.
      RELECTURE : Opus 5.5
@@ -18,7 +19,7 @@
                dsm-filet.js, dsm-fil3d.js, dsm-foehn.js, dsm-flux.js,
                dsm-basal.js, dsm-worker-glacier.js, dsm-worker-flux.js,
                dsm-barrages-cfbr.js, dsm-barrages-gdw.js, dsm-barrages-fao.js,
-               dsm-worker-barrage.js, dsm-barrage.js ;
+               dsm-worker-barrage.js, dsm-export-shp.js, dsm-barrage.js ;
                map.html (envoi des tuiles par BroadcastChannel « copernicus_dsm ») ;
                tuiles d'étiquettes Carto (clé CARTO_KEY) ou Esri
      ENTRÉE  : GeoTIFF Copernicus ou grille assemblée reçus de map.html
@@ -62,6 +63,12 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0d1117;
 #dlg-barrage .dlg-ligne{text-align:left;overflow:hidden;text-overflow:ellipsis}
 #dlg-barrage .dlg-note{color:#a6adc8}
 #dlg-barrage .dlg-saisie{margin:6px 0;color:#cdd6f4}
+#onde-panel{position:absolute;left:50%;bottom:8px;transform:translateX(-50%);z-index:25;
+  display:none;align-items:center;gap:6px;padding:4px 8px;font-size:.66rem;
+  background:rgba(13,17,23,.88);border:1px solid #2a2d3d;border-radius:5px}
+#onde-panel input[type=range]{width:280px;accent-color:#89b4fa}
+#onde-panel #onde-lbl{font-family:'Courier New',monospace;color:#f5e0dc;min-width:128px}
+#onde-panel select{background:#181825;color:#cdd6f4;border:1px solid #45475a;border-radius:3px;font-size:.66rem}
 #dlg-barrage input{width:70px;background:#181825;color:#cdd6f4;border:1px solid #45475a;
   border-radius:3px;font-size:.72rem;padding:1px 3px}
 
@@ -2101,6 +2108,7 @@ document.getElementById('btn-ombre').addEventListener('click', function() {
 <script src="dsm-barrages-gdw.js"></script>
 <script src="dsm-barrages-fao.js"></script>
 <script src="dsm-worker-barrage.js"></script>
+<script src="dsm-export-shp.js"></script>
 <script src="dsm-barrage.js"></script>
 <script>
 var PROF = { actif: true, t: Object.create(null), n: Object.create(null) };

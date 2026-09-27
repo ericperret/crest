@@ -101,7 +101,11 @@ indiquent l'étape, le pas et l'état du solveur.
 
 ## Clic droit : robinet, lave, rupture de barrage
 
-Le clic droit ouvre un menu.
+Les barrages connus de l'emprise (CFBR, puis Global Dam Watch, puis FAO
+AQUASTAT, sans doublon) sont posés sur la carte dès le chargement (carré
+cyan, nom écrit quand 40 repères au plus sont visibles, survol : nom,
+hauteur, volume). Le clic droit ouvre un menu ; sur un repère, la première
+entrée lance directement la rupture de cet ouvrage.
 
 - **Robinet** : remplissage doux depuis le point cliqué (bassins
   successifs, seul le bassin le plus aval monte), jusqu'à la mer, au bord
@@ -123,8 +127,34 @@ Le clic droit ouvre un menu.
 | Virages | Surélévation C·v²·B/(g·Rc) (USACE EM 1110-2-1601), plafonnée à v²/2g |
 | Emprise | Sections en travers du DSM (Voronoï + seuils de connexion), date d'arrivée par pixel (lame ≥ 10 cm) |
 | Isochrones | Pas de 1 min, allongé (2, 5, 10… 120 min) dès que deux fronts successifs sont à moins de 10 pixels ; le changement de pas est noté sur la courbe |
+| Datation | À chaque pas de calcul (CFL), pas à 10 s près |
+| Fin | Plus aucun pixel atteint pendant 1 h (48 h au plus) : l'emprise est l'enveloppe complète de la vidange totale, sur-inondation aval comprise |
 
-Survol : temps d'arrivée de l'onde en minutes. Espace : efface.
+**Affichage vivant** : pendant le calcul, l'emprise se dessine au fil du
+temps simulé (couleur = date d'arrivée, rouge tôt → violet tard ; opacité
+forte tant que l'eau est présente, croissant avec la lame de 0,1 à 10 m ;
+opacité faible après retrait). Barre d'état : temps, front, débit à la
+brèche, part restante de la retenue.
+
+**Rejeu** (calcul terminé) : lecture / pause, curseur de temps, vitesse
+1 min/s à 1 h/s ; les isochrones apparaissent à mesure. Niveaux interpolés
+entre clichés à la minute.
+
+**Export ⬇ Shapefile** : ZIP (.shp .shx .dbf .prj .cpg), WGS84
+géographique (EPSG:4326), une entité polygone par tranche d'arrivée
+(isochrones, puis, une fois le front arrêté, remplissage latéral au pas du
+dernier isochrone), contours exacts des pixels sans simplification.
+
+| Champ | Contenu |
+|---|---|
+| T_DEB_MIN, T_FIN_MIN | Le front atteint la tranche entre ces deux dates (min après rupture) |
+| T_FIN_HM | T_FIN en hh:mm |
+| PAS_MIN | Pas d'isochrone de la tranche |
+| SURF_HA, NB_PIX | Surface (sphère authalique WGS84), nombre de pixels |
+| BARRAGE, V_KM3, H0_M, Q_MAX_M3S | Scénario : ouvrage, volume, hauteur, débit de pointe à la brèche |
+
+Survol : temps d'arrivée (min), lame à l'instant affiché et lame maximale.
+Espace ou ✕ : efface.
 
 ---
 
@@ -150,6 +180,7 @@ dsm-flux.js            écoulement de la glace
 dsm-worker-flux.js     écoulement parallèle par bassin
 dsm-barrage.js         menu du clic droit, choix du barrage, dessin
 dsm-worker-barrage.js  onde de rupture (Worker), isochrones
+dsm-export-shp.js      export Shapefile de l'emprise datée
 dsm-barrages-cfbr.js   grands barrages français (CFBR)
 dsm-barrages-gdw.js    barrages mondiaux (Global Dam Watch v1.0)
 dsm-barrages-fao.js    barrages mondiaux complémentaires (FAO AQUASTAT)
@@ -171,7 +202,9 @@ avec une ligne « ALGO ».
   bathymétrie) ; la retenue réelle est remplacée par un bief prismatique de
   même volume et même hauteur (vidange plus rapide, cas le pire) ; le front
   numérique sur lit sec retarde d'environ 10 % sur Ritter à la première
-  minute.
+  minute ; lame affichée par pixel = niveau de sa rive (surélévation en
+  courbe comprise) moins le sol, eau piégée derrière un seuil non
+  représentée après retrait.
 - La glace ne franchit pas les lignes de partage (bassins indépendants).
 - Rayonnement direct seul, sans diffus ni réfléchi.
 - Pas de courbes de niveau sous 1000 m.
