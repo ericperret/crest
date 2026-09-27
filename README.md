@@ -99,6 +99,35 @@ indiquent l'étape, le pas et l'état du solveur.
 
 ---
 
+## Clic droit : robinet, lave, rupture de barrage
+
+Le clic droit ouvre un menu.
+
+- **Robinet** : remplissage doux depuis le point cliqué (bassins
+  successifs, seul le bassin le plus aval monte), jusqu'à la mer, au bord
+  de la carte ou à une cuvette fermée. Sert aussi de trajectoire de
+  référence à la rupture de barrage.
+- **Lave** : à venir.
+- **Rupture de barrage** : propose les barrages connus à moins de 30 km
+  (CFBR en priorité, puis Global Dam Watch, puis FAO AQUASTAT), ou la saisie
+  du volume (km³) et de la hauteur d'eau (m) au point cliqué. Cas le pire :
+  retenue pleine, rupture instantanée et totale, sol nu, lit aval sec.
+
+| Étape | Modèle |
+|---|---|
+| Trajectoire | Chemin du robinet depuis l'ouvrage |
+| Ouvrage | Parement aval repéré dans le DSM (pente > 1/5, USBR 1987), pied = cote de fondation, retenue pleine = pied + hauteur |
+| Retenue | Bief prismatique de volume V, hauteur h0, largeur = longueur de digue |
+| Onde | Saint-Venant 1D, schéma de Stelling & Duinmeijer (2003), validé sur la solution de Ritter (1892) |
+| Frottement | Manning, n de Cowan (1956) : terre nue 0,020 × sinuosité |
+| Virages | Surélévation C·v²·B/(g·Rc) (USACE EM 1110-2-1601), plafonnée à v²/2g |
+| Emprise | Sections en travers du DSM (Voronoï + seuils de connexion), date d'arrivée par pixel (lame ≥ 10 cm) |
+| Isochrones | Pas de 1 min, allongé (2, 5, 10… 120 min) dès que deux fronts successifs sont à moins de 10 pixels ; le changement de pas est noté sur la courbe |
+
+Survol : temps d'arrivée de l'onde en minutes. Espace : efface.
+
+---
+
 ## Fichiers
 
 ```
@@ -119,6 +148,11 @@ dsm-worker-glacier.js  bilan de masse (pool de Workers)
 dsm-basal.js           glissement basal
 dsm-flux.js            écoulement de la glace
 dsm-worker-flux.js     écoulement parallèle par bassin
+dsm-barrage.js         menu du clic droit, choix du barrage, dessin
+dsm-worker-barrage.js  onde de rupture (Worker), isochrones
+dsm-barrages-cfbr.js   grands barrages français (CFBR)
+dsm-barrages-gdw.js    barrages mondiaux (Global Dam Watch v1.0)
+dsm-barrages-fao.js    barrages mondiaux complémentaires (FAO AQUASTAT)
 ```
 
 Tous les fichiers sont à placer dans le même dossier. Chaque source porte
@@ -132,6 +166,12 @@ avec une ligne « ALGO ».
 - Simulation « robinet » (clic droit) : écoulement mono-direction (D8), une
   seule sortie par seuil ; passage sous obstacle si la surface dépasse le sol
   à 2 px (ponts, embâcles… mais aussi arêtes minces).
+- Rupture de barrage : onde 1D le long d'une seule trajectoire, projetée
+  latéralement ; un plan d'eau du DSM est traité comme du sol (pas de
+  bathymétrie) ; la retenue réelle est remplacée par un bief prismatique de
+  même volume et même hauteur (vidange plus rapide, cas le pire) ; le front
+  numérique sur lit sec retarde d'environ 10 % sur Ritter à la première
+  minute.
 - La glace ne franchit pas les lignes de partage (bassins indépendants).
 - Rayonnement direct seul, sans diffus ni réfléchi.
 - Pas de courbes de niveau sous 1000 m.
@@ -153,6 +193,15 @@ Esri. Clé gratuite : <https://carto.com/basemaps/>.
   Space GmbH 2014-2018, fourni dans le cadre de COPERNICUS par l'Union
   européenne et l'ESA.
 - Imagerie : © Esri, Maxar. Étiquettes : © CARTO, © OpenStreetMap.
+- Barrages mondiaux : Global Dam Watch v1.0, © Union européenne 1995-2026,
+  CC BY 4.0 — Lehner B. et al. (2024), Scientific Data 11:1069 ; extraction
+  des seuls ouvrages de hauteur et de volume connus.
+- Grands barrages français : Comité français des barrages et réservoirs
+  (CFBR).
+- Barrages complémentaires : FAO. 2021. AQUASTAT : Geo-referenced Database
+  on Dams. Consulté le 27 septembre 2026.
+  <https://www.fao.org/aquastat/en/databases/dams> licence CC-BY-4.0 ;
+  fusion des fichiers régionaux, ouvrages de hauteur et de volume connus.
 
 ## Licence
 

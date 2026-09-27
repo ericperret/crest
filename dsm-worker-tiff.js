@@ -10,7 +10,8 @@
              usage commercial interdit sauf accord écrit de l'auteur (voir LICENSE)
    DÉPEND  : dsm.html (imgW, imgH, GEO, elevGrid, oscHypso, oscContour,
              oscWater, srcX, srcY, srcPPx, DISP, render, resizeWrap,
-             makeHypsoLUT, dsmReset, resetSim), dsm-temp.js (tempInit)
+             makeHypsoLUT, dsmReset, resetSim), dsm-barrage.js
+             (barrageEffacer), dsm-temp.js (tempInit)
    EXPOSE  : TIFF_WORKER_SRC, spawnTiffWorker, attachWorkerDoneHandler,
              prepViewerUI, loadInViewer, loadGridInViewer
    ═══════════════════════════════════════════════════════════════════ */
@@ -421,6 +422,7 @@ function prepViewerUI(){
   document.getElementById('btn-carto').disabled=true;
   document.getElementById('btn-rec').disabled=true;
   oscHypso=null; oscContour=null; resetSim();
+  if(typeof barrageEffacer==='function') barrageEffacer();
 }
 
 /* ── loadInViewer ── E : File GeoTIFF → T : prépare l'interface, titre,

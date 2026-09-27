@@ -6,7 +6,8 @@
      OBJET   : visualiseur de modèle numérique de terrain et simulation
                paléoclimatique d'un glacier : hypsométrie, courbes, ombres,
                insolation, température, lignes de partage, filet adaptatif,
-               bilan de masse, écoulement, glissement basal, foehn ; vidéo
+               bilan de masse, écoulement, glissement basal, foehn ; robinet
+               et rupture de barrage (clic droit) ; vidéo
                des ombres, enregistrement, profileur.
      AUTEUR  : Eric P.
      RELECTURE : Opus 5.5
@@ -15,7 +16,9 @@
      DÉPEND  : dsm-carte.js, dsm-astro.js, dsm-worker-tiff.js, dsm-ombre.js,
                dsm-insol.js, dsm-temp.js, dsm-partage.js, dsm-mesh.js,
                dsm-filet.js, dsm-fil3d.js, dsm-foehn.js, dsm-flux.js,
-               dsm-basal.js, dsm-worker-glacier.js, dsm-worker-flux.js ;
+               dsm-basal.js, dsm-worker-glacier.js, dsm-worker-flux.js,
+               dsm-barrages-cfbr.js, dsm-barrages-gdw.js, dsm-barrages-fao.js,
+               dsm-worker-barrage.js, dsm-barrage.js ;
                map.html (envoi des tuiles par BroadcastChannel « copernicus_dsm ») ;
                tuiles d'étiquettes Carto (clé CARTO_KEY) ou Esri
      ENTRÉE  : GeoTIFF Copernicus ou grille assemblée reçus de map.html
@@ -48,6 +51,19 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0d1117;
 #btn-partage.active{border-color:#f5c2e7;color:#f5c2e7}
 #btn-fil.active{border-color:#fab387;color:#fab387}
 #btn-flux.active{border-color:#f38ba8;color:#f38ba8}
+
+#menu-clic{position:fixed;z-index:3000;display:none;flex-direction:column;gap:3px;
+  padding:5px;background:rgba(20,24,32,.95);border:1px solid #45475a;border-radius:6px}
+#menu-clic .btn{text-align:left}
+#dlg-barrage{position:fixed;z-index:3000;top:60px;left:50%;transform:translateX(-50%);
+  display:none;flex-direction:column;gap:4px;max-width:92vw;padding:10px;
+  background:rgba(20,24,32,.97);border:1px solid #45475a;border-radius:6px;font-size:.72rem}
+#dlg-barrage .dlg-titre{font-weight:600;color:#b4befe;margin-bottom:4px}
+#dlg-barrage .dlg-ligne{text-align:left;overflow:hidden;text-overflow:ellipsis}
+#dlg-barrage .dlg-note{color:#a6adc8}
+#dlg-barrage .dlg-saisie{margin:6px 0;color:#cdd6f4}
+#dlg-barrage input{width:70px;background:#181825;color:#cdd6f4;border:1px solid #45475a;
+  border-radius:3px;font-size:.72rem;padding:1px 3px}
 
 #ctrl-panel{
   width:130px;flex-shrink:0;height:100%;
@@ -625,6 +641,7 @@ function render() {
   const sX=Math.round(srcX), sY=Math.round(srcY), sW=Math.round(sw), sH=Math.round(sh);
   ctx.drawImage(osc,sX,sY,sW,sH,0,0,DISP,DISP);
   if(oscWater) ctx.drawImage(oscWater,sX,sY,sW,sH,0,0,DISP,DISP);
+  if(typeof barrageDessiner==='function') barrageDessiner(sX,sY,sW,sH);
 
   if (partageActif && partageOsc) {
     const rx = 1024 / imgW, ry = 1024 / imgH;
@@ -1748,6 +1765,8 @@ canvas.addEventListener('mousemove',e=>{
       const prof=niv-v;
       alt=`eau surf. ${niv.toFixed(0)} m${prof>0.5?` (prof. ${prof.toFixed(0)} m)`:''}`;
     } else if(v>0.5&&v<9000) alt=`${v.toFixed(0)} m`;
+    const tb=(typeof barrageArrivee==='function')?barrageArrivee(idx):NaN;
+    if(!isNaN(tb)) alt+=`  🌊 ${tb.toFixed(0)} min`;
   }
   let insolTxt='';
   if (typeof insolActive!=='undefined' && insolActive && insolMap){
@@ -2078,6 +2097,11 @@ document.getElementById('btn-ombre').addEventListener('click', function() {
 <script src="dsm-basal.js"></script>
 <script src="dsm-worker-glacier.js"></script>
 <script src="dsm-worker-flux.js"></script>
+<script src="dsm-barrages-cfbr.js"></script>
+<script src="dsm-barrages-gdw.js"></script>
+<script src="dsm-barrages-fao.js"></script>
+<script src="dsm-worker-barrage.js"></script>
+<script src="dsm-barrage.js"></script>
 <script>
 var PROF = { actif: true, t: Object.create(null), n: Object.create(null) };
 /* ── profWrap ── E : nom, fonction → T : enveloppe qui cumule temps et
