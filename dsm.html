@@ -595,7 +595,7 @@ function drawLegend() {
     lctx.fillStyle='rgba(180,190,210,.6)'; lctx.fillRect(barX+barW,y,4,1);
     lctx.fillStyle='#a6adc8'; lctx.fillText(`${Math.round(elev)}`,textX+4,y+3);
   }
-  if(wet&&wet.size>0&&waterLevel>vminGlobal){
+  if(eauNb>0&&waterLevel>vminGlobal){
     const t = Math.min(1,Math.max(0,(waterLevel-vminGlobal)/(vmaxGlobal-vminGlobal)));
     const y = barY + Math.round((1-t)*barH);
     lctx.strokeStyle='rgba(80,160,255,.9)'; lctx.lineWidth=1.5;
@@ -1743,9 +1743,10 @@ canvas.addEventListener('mousemove',e=>{
   let alt='mer';
   if(col>=0&&col<imgW&&row>=0&&row<imgH){
     const idx=row*imgW+col, v=elevGrid[idx];
-    if(wet&&wet.has(idx)){
-      const prof=waterLevel-v;
-      alt=`eau surf. ${waterLevel.toFixed(0)} m${prof>0?` (prof. ${prof.toFixed(0)} m)`:''}`;
+    const niv=eauNiveau(idx);
+    if(!isNaN(niv)){
+      const prof=niv-v;
+      alt=`eau surf. ${niv.toFixed(0)} m${prof>0.5?` (prof. ${prof.toFixed(0)} m)`:''}`;
     } else if(v>0.5&&v<9000) alt=`${v.toFixed(0)} m`;
   }
   let insolTxt='';

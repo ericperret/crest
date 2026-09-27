@@ -14,7 +14,8 @@
              canvas, render, vue courante, panneau ctrl*)
    EXPOSE  : ombreElev1024, ombreResX, ombreResY, ombreHorizonCopy,
              OMBRE_DIM, OMBRE_N_AZ, lancerOmbre, lancerPasse2,
-             lancerPasse2Seule, stopOmbre, resetSim, placeFaucet, …
+             lancerPasse2Seule, stopOmbre, resetSim, placeFaucet, eauNiveau,
+             eauNb, waterLevel, …
    CONVENTIONS : azimut 0 = nord, sens horaire ; horizons en centi-degrés
              (Int16) ; heures solaires locales
    ═══════════════════════════════════════════════════════════════════ */
@@ -849,105 +850,225 @@ function stopOmbre() {
   };
 })();
 
-let wet=null, border=null, simRunning=false;
-let faucetIdx=-1, faucetElev=0, waterRise=0, waterLevel=0, touchesMer=false;
-function effectiveRise(){ return waterRise<=10 ? waterRise : 10+(waterRise-10)*2; }
+/* ═══ SIMULATION « ROBINET » (clic droit) ═══════════════════════════
+   Modèle : l'eau ne monte que dans le bassin terminal (le plus aval) ;
+   les bassins amont, pleins jusqu'à leur seuil, sont gelés et gardent
+   leur front. Chaque bassin = racine d'un union-find, avec son niveau
+   de surface et un tas-min de son front. Un débordement (cellule de
+   front plus basse que le niveau) crée un nouveau bassin terminal ;
+   un bassin gelé voisin est absorbé quand le niveau terminal atteint
+   le sien (entrée « lien » du tas, clé = niveau du bassin voisin).
+   Pont : si la surface (sol + épaisseur d'eau) dépasse l'altitude du
+   pixel situé PONT_PORTEE pixels plus loin, l'eau passe sous l'obstacle
+   (entrée « pont » du tas, clé = altitude d'atterrissage + PONT_EPS).
+   ═══════════════════════════════════════════════════════════════════ */
+let eauParent=null, eauNiv=null, eauTas=null;
+let eauActif=-1, eauNb=0, eauBassins=0, eauFin='';
+let simRunning=false, faucetIdx=-1, waterLevel=0;
+const EAU_BUDGET_MS=12;
+const EAU_COULEUR='rgba(0,20,80,.88)';
+const PONT_PORTEE=2;     // distance (px) du bord mouillé au pixel d'atterrissage
+const PONT_EPS=0.01;     // m : la surface doit dépasser strictement l'atterrissage
 
-function reachable(idx){
-  const bElev=elevGrid[idx], eff=effectiveRise();
-  const row=Math.floor(idx/imgW), col=idx%imgW;
-  for(let dr=-1;dr<=1;dr++) for(let dc=-1;dc<=1;dc++){
-    if(!dr&&!dc) continue;
-    const nr=row+dr, nc=col+dc;
-    if(nr<0||nr>=imgH||nc<0||nc>=imgW) continue;
-    const nIdx=nr*imgW+nc;
-    if(wet.has(nIdx)&&bElev<=elevGrid[nIdx]+eff) return true;
+/* ── TasMin ── E : capacité initiale → T : tas binaire min sur (indice,
+   clé) en tableaux typés, doublement à saturation → S : objet push/pop ;
+   pop renvoie l'indice et laisse la clé dans this.cle. */
+function TasMin(cap){
+  this.i=new Int32Array(cap); this.k=new Float32Array(cap); this.n=0; this.cle=0;
+}
+TasMin.prototype.push=function(idx,key){
+  if(this.n===this.i.length){
+    const ni=new Int32Array(this.n*2), nk=new Float32Array(this.n*2);
+    ni.set(this.i); nk.set(this.k); this.i=ni; this.k=nk;
   }
-  return false;
+  let j=this.n++;
+  while(j>0){
+    const p=(j-1)>>1;
+    if(this.k[p]<=key) break;
+    this.i[j]=this.i[p]; this.k[j]=this.k[p]; j=p;
+  }
+  this.i[j]=idx; this.k[j]=key;
+};
+TasMin.prototype.pop=function(){
+  const top=this.i[0]; this.cle=this.k[0];
+  const n=--this.n, li=this.i[n], lk=this.k[n];
+  let j=0;
+  for(;;){
+    let m=2*j+1; if(m>=n) break;
+    if(m+1<n&&this.k[m+1]<this.k[m]) m++;
+    if(this.k[m]>=lk) break;
+    this.i[j]=this.i[m]; this.k[j]=this.k[m]; j=m;
+  }
+  this.i[j]=li; this.k[j]=lk;
+  return top;
+};
+
+/* ── eauRacine ── E : indice de pixel mouillé → T : remontée union-find
+   avec compression par demi-chemin → S : indice racine du bassin. */
+function eauRacine(x){
+  const p=eauParent;
+  while(p[x]!==x){ p[x]=p[p[x]]; x=p[x]; }
+  return x;
 }
 
-function addToWet(idx,c){
-  wet.add(idx); border.delete(idx);
-  const row=Math.floor(idx/imgW), col=idx%imgW;
+/* ── eauNiveau ── E : indice de pixel → T : niveau de la racine si
+   mouillé → S : altitude de surface (m) ou NaN si sec. */
+function eauNiveau(idx){
+  return (eauParent&&eauParent[idx]!==-1) ? eauNiv[eauRacine(idx)] : NaN;
+}
+
+/* ── eauMouiller ── E : pixel, racine de son bassin, contexte 2D →
+   T : rattache le pixel, le peint, pousse ses 8 voisins dans le tas du
+   bassin (sec : clé = altitude ; mouillé d'un autre bassin : clé =
+   niveau de ce bassin ; nodata ≥ 9000 ignoré = paroi) ; dans chaque
+   direction, si le voisin est plus haut que le pixel courant et que le
+   pixel à PONT_PORTEE, pousse ce dernier en entrée « pont » (sec : clé =
+   altitude + PONT_EPS ; autre bassin : clé = son niveau) ; pixel au bord
+   de grille → fin « bord » → S : aucune. */
+function eauMouiller(idx,rac,c){
+  eauParent[idx]=rac; eauNb++;
+  const row=(idx/imgW)|0, col=idx-row*imgW;
   c.fillRect(col,row,1,1);
+  if(row===0||col===0||row===imgH-1||col===imgW-1) eauFin='bord';
+  const T=eauTas.get(rac);
   for(let dr=-1;dr<=1;dr++) for(let dc=-1;dc<=1;dc++){
     if(!dr&&!dc) continue;
     const nr=row+dr, nc=col+dc;
     if(nr<0||nr>=imgH||nc<0||nc>=imgW) continue;
-    const nIdx=nr*imgW+nc;
-    if(wet.has(nIdx)) continue;
-    const nv=elevGrid[nIdx];
-    if(nv<=0.5){touchesMer=true; continue;}
-    border.add(nIdx);
+    const n=nr*imgW+nc;
+    if(eauParent[n]===-1){
+      const v=elevGrid[n];
+      if(v<9000) T.push(n,v);
+      const lr=row+PONT_PORTEE*dr, lc=col+PONT_PORTEE*dc;
+      if(lr<0||lr>=imgH||lc<0||lc>=imgW) continue;
+      const l=lr*imgW+lc, vl=elevGrid[l];
+      if(vl>=9000) continue;
+      if(eauParent[l]===-1){
+        if(v>elevGrid[idx]&&v>vl+PONT_EPS) T.push(l,vl+PONT_EPS);
+      } else {
+        const r=eauRacine(l);
+        if(r!==rac&&v>elevGrid[idx]&&v>eauNiv[r]) T.push(l,eauNiv[r]);
+      }
+    } else {
+      const r=eauRacine(n);
+      if(r!==rac) T.push(n,eauNiv[r]);
+    }
   }
 }
 
+/* ── eauFusion ── E : racine d'un bassin gelé → T : union avec le bassin
+   actif, le plus petit tas versé dans le plus grand, niveau = max des
+   deux, la racine au plus grand tas devient l'actif → S : aucune. */
+function eauFusion(r){
+  const a=eauActif, Ta=eauTas.get(a), Tr=eauTas.get(r);
+  const [gr,pt,Tg,Tp]= Ta.n>=Tr.n ? [a,r,Ta,Tr] : [r,a,Tr,Ta];
+  for(let j=0;j<Tp.n;j++) Tg.push(Tp.i[j],Tp.k[j]);
+  eauTas.delete(pt);
+  eauParent[pt]=gr;
+  eauNiv[gr]=Math.max(eauNiv[a],eauNiv[r]);
+  eauActif=gr; eauBassins--;
+}
+
+/* ── eauEtape ── E : contexte 2D → T : dépile le minimum du front du
+   bassin actif ; lien vers autre bassin → fusion ; mer → fin « mer » ;
+   entrée « pont » (clé > altitude) → le niveau monte à la clé, puis
+   débordement sous l'obstacle ; altitude ≥ niveau → le bassin monte et
+   absorbe le pixel ; altitude < niveau → débordement : le pixel fonde
+   un nouveau bassin actif ; front vide → fin « fermé » → S : aucune. */
+function eauEtape(c){
+  const T=eauTas.get(eauActif);
+  if(T.n===0){ eauFin='fermé'; return; }
+  const idx=T.pop(), cle=T.cle;
+  if(eauParent[idx]!==-1){
+    const r=eauRacine(idx);
+    if(r!==eauActif) eauFusion(r);
+    return;
+  }
+  const v=elevGrid[idx];
+  if(v<=0.5){ eauFin='mer'; return; }
+  if(cle>v&&eauNiv[eauActif]<cle) eauNiv[eauActif]=cle;
+  if(v>=eauNiv[eauActif]){
+    eauNiv[eauActif]=v;
+    eauMouiller(idx,eauActif,c);
+  } else {
+    eauNiv[idx]=v; eauTas.set(idx,new TasMin(16));
+    eauActif=idx; eauBassins++;
+    eauMouiller(idx,idx,c);
+  }
+}
+
+/* ── drawFaucetMarker ── E : contexte 2D, colonne, ligne → T : carré
+   rouge 5×5 centré → S : aucune. */
 function drawFaucetMarker(c,col,row){
   c.fillStyle='rgb(220,40,40)'; c.fillRect(col-2,row-2,5,5);
+  c.fillStyle=EAU_COULEUR;
 }
 
+/* ── eauStatut ── E : aucune → T : texte d'état selon eauFin → S :
+   chaîne pour #vstatus. */
+function eauStatut(){
+  const s=`surf. ${waterLevel.toFixed(0)} m — ${eauNb.toLocaleString()} px — ${eauBassins} bassin(s)`;
+  if(eauFin==='mer')   return 'Mer atteinte — '+s;
+  if(eauFin==='bord')  return 'Bord de carte atteint — '+s;
+  if(eauFin==='fermé') return 'Cuvette fermée noyée — '+s;
+  return 'Remplissage — '+s;
+}
+
+/* ── simTick ── E : aucune → T : enchaîne eauEtape pendant EAU_BUDGET_MS,
+   met à jour waterLevel (niveau du bassin actif), le statut et le rendu,
+   arrête la simulation si eauFin est posé → S : aucune. */
 function simTick(){
-  if(touchesMer){
-    simRunning=false;
-    document.getElementById('vstatus').textContent=
-      `Mer atteinte — surf. ${waterLevel.toFixed(0)} m — ${wet.size.toLocaleString()} px`;
-    render(); return;
-  }
-  if(border.size===0){
-    simRunning=false;
-    document.getElementById('vstatus').textContent='Simulation terminée';
-    render(); return;
-  }
   const c=oscWater.getContext('2d');
-  c.fillStyle='rgba(0,20,80,.88)';
-  let minE=Infinity;
-  for(const idx of border){
-    const bElev=elevGrid[idx];
-    if(bElev<minE&&reachable(idx)) minE=bElev;
-  }
-  if(minE===Infinity){
-    waterRise++;
-    waterLevel=faucetElev+effectiveRise();
-    document.getElementById('vstatus').textContent=
-      `Montée +${waterRise} (pénétration ${effectiveRise().toFixed(0)} m) — surf. ${waterLevel.toFixed(0)} m — ${wet.size.toLocaleString()} px`;
-    render(); return;
-  }
-  const toAdd=[];
-  for(const idx of border)
-    if(elevGrid[idx]<=minE+0.5&&reachable(idx)) toAdd.push(idx);
-  for(const idx of toAdd) addToWet(idx,c);
-  waterLevel=faucetElev+effectiveRise();
-  if(faucetIdx>=0) drawFaucetMarker(c,faucetIdx%imgW,Math.floor(faucetIdx/imgW));
-  document.getElementById('vstatus').textContent=
-    `Surf. ${waterLevel.toFixed(0)} m (+${waterRise} m) — ${wet.size.toLocaleString()} px — front ${border.size.toLocaleString()}`;
+  c.fillStyle=EAU_COULEUR;
+  const t0=performance.now();
+  while(!eauFin&&performance.now()-t0<EAU_BUDGET_MS)
+    for(let k=0;k<512&&!eauFin;k++) eauEtape(c);
+  waterLevel=eauNiv[eauRacine(eauActif)];
+  drawFaucetMarker(c,faucetIdx%imgW,(faucetIdx/imgW)|0);
+  if(eauFin) simRunning=false;
+  document.getElementById('vstatus').textContent=eauStatut();
   render();
 }
 
+/* ── resetSim ── E : aucune → T : arrête la simulation, libère les
+   structures, efface le calque eau, redessine → S : aucune. */
 function resetSim(){
   simRunning=false;
-  wet=null; border=null; faucetIdx=-1;
-  faucetElev=0; waterRise=0; waterLevel=0; touchesMer=false;
+  eauParent=null; eauNiv=null; eauTas=null;
+  eauActif=-1; eauNb=0; eauBassins=0; eauFin='';
+  faucetIdx=-1; waterLevel=0;
   if(oscWater) oscWater.getContext('2d').clearRect(0,0,oscWater.width,oscWater.height);
   render();
   document.getElementById('vstatus').textContent=
     'Clic droit = poser le robinet  |  Espace = reset';
 }
 
+/* ── placeFaucet ── E : colonne, ligne dans la grille → T : refuse mer et
+   nodata, réinitialise, crée le bassin initial (racine = robinet, niveau
+   = sol), mouille le robinet, lance la boucle d'animation → S : aucune. */
 function placeFaucet(col,row){
   if(!elevGrid||col<0||col>=imgW||row<0||row>=imgH) return;
-  const v=elevGrid[row*imgW+col]; if(v<=0.5) return;
+  const idx=row*imgW+col, v=elevGrid[idx];
+  if(v<=0.5||v>=9000) return;
   resetSim();
-  faucetIdx=row*imgW+col; faucetElev=v;
-  waterRise=0; waterLevel=v; touchesMer=false;
-  wet=new Set(); border=new Set();
+  const N=imgW*imgH;
+  eauParent=new Int32Array(N).fill(-1);
+  eauNiv=new Float32Array(N);
+  eauTas=new Map();
+  faucetIdx=idx; eauActif=idx; eauBassins=1;
+  eauNiv[idx]=v; waterLevel=v;
+  eauTas.set(idx,new TasMin(64));
   const c=oscWater.getContext('2d');
-  c.fillStyle='rgba(0,20,80,.88)';
-  addToWet(faucetIdx,c); drawFaucetMarker(c,col,row);
+  c.fillStyle=EAU_COULEUR;
+  eauMouiller(idx,idx,c);
+  drawFaucetMarker(c,col,row);
   render();
-  simRunning=true; requestAnimationFrame(simLoop);
   document.getElementById('vstatus').textContent=`Robinet — sol ${v.toFixed(0)} m`;
+  simRunning=true; requestAnimationFrame(simLoop);
 }
 
+/* ── simLoop ── E : aucune → T : un simTick par trame tant que
+   simRunning → S : aucune. */
 function simLoop(){ if(!simRunning) return; simTick(); if(simRunning) requestAnimationFrame(simLoop); }
 
 canvas.addEventListener('contextmenu',e=>{

@@ -129,7 +129,9 @@ avec une ligne « ALGO ».
 
 ## Limites connues
 
-- Simulation « robinet » (clic droit) : à refaire, résultat non physique.
+- Simulation « robinet » (clic droit) : écoulement mono-direction (D8), une
+  seule sortie par seuil ; passage sous obstacle si la surface dépasse le sol
+  à 2 px (ponts, embâcles… mais aussi arêtes minces).
 - La glace ne franchit pas les lignes de partage (bassins indépendants).
 - Rayonnement direct seul, sans diffus ni réfléchi.
 - Pas de courbes de niveau sous 1000 m.
