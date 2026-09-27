@@ -1,0 +1,710 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<!-- ═══════════════════════════════════════════════════════════════════
+     FICHIER : map.html - v27/09/2026
+     OBJET   : carte mondiale des tuiles Copernicus GLO-30 (1°×1°) : repère
+               les tuiles présentes dans un dossier local, donne la commande
+               AWS S3 des manquantes, ouvre une tuile dans dsm.html, ou
+               assemble une zone rectangulaire sur plusieurs tuiles et
+               l'envoie à dsm.html.
+     AUTEUR  : Eric P.
+     RELECTURE : Opus 5.5
+     DÉPEND  : dsm-carte.js ; dsm.html (BroadcastChannel « dsm-tile ») ;
+               tuiles Esri World Imagery et étiquettes Carto (CARTO_KEY)
+               ou Esri ; AWS CLI pour le téléchargement (hors page)
+     ⚠ readTiffTags, checkTiff, inflateNative et decodeTile sont des copies
+       de dsm-worker-tiff.js, à maintenir en double.
+     ═══════════════════════════════════════════════════════════════════ -->
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Copernicus DSM — Carte</title>
+<script src="dsm-carte.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:100%;height:100%;overflow:hidden;background:#0d1117;
+  color:#cdd6f4;font-family:'Segoe UI',Arial,sans-serif}
+#topbar{position:fixed;top:0;left:0;right:0;height:42px;z-index:2000;
+  display:flex;align-items:center;gap:12px;padding:0 16px;
+  background:rgba(13,17,23,.88);backdrop-filter:blur(4px);
+  border-bottom:1px solid #2a2d3d}
+#topbar h1{font-size:.82rem;font-weight:600;color:#b4befe;white-space:nowrap}
+.btn{font-size:.70rem;padding:3px 11px;border:1px solid #45475a;border-radius:4px;
+  background:#181825;color:#cdd6f4;cursor:pointer;white-space:nowrap}
+.btn:hover{background:#2a2d3d;border-color:#89b4fa}
+.btn.active{background:#2a2d3d;border-color:#f38ba8;color:#f38ba8}
+.btn:disabled{opacity:.4;cursor:default}
+#stats{font-size:.65rem;color:#a6e3a1}
+#map{position:fixed;top:42px;left:0;right:0;bottom:0}
+#tip{position:fixed;z-index:3000;background:rgba(13,17,23,.92);
+  color:#cdd6f4;font-size:.62rem;font-family:'Courier New',monospace;
+  padding:3px 9px;border-radius:4px;border:1px solid #2a2d3d;
+  pointer-events:none;display:none;white-space:nowrap}
+
+#aws-panel{position:fixed;z-index:3000;bottom:14px;right:14px;
+  background:rgba(13,17,23,.95);border:1px solid #2a2d3d;border-radius:6px;
+  padding:12px 14px;font-size:.65rem;max-width:480px;display:none;
+  box-shadow:0 4px 20px rgba(0,0,0,.5)}
+#aws-panel h2{font-size:.70rem;color:#89dceb;margin-bottom:8px;font-weight:600}
+#aws-cmd{font-family:'Courier New',monospace;font-size:.60rem;color:#a6e3a1;
+  background:#0d1117;padding:8px 10px;border-radius:4px;word-break:break-all;
+  white-space:pre-wrap;line-height:1.6;border:1px solid #2a2d3d;margin-bottom:8px;
+  cursor:pointer;user-select:all}
+#aws-cmd:hover{border-color:#89dceb}
+.aws-note{color:#6c7086;font-size:.58rem;line-height:1.5}
+.aws-note b{color:#cdd6f4}
+#aws-close{float:right;cursor:pointer;color:#f38ba8;font-size:.75rem;
+  margin-top:-2px;background:none;border:none;padding:0}
+</style>
+</head>
+<body>
+
+<div id="topbar">
+  <h1>Copernicus DSM COG-10</h1>
+  <button class="btn" id="btn-open">📂 Ouvrir copernicus/</button>
+  <input type="file" id="folder-in" webkitdirectory style="display:none">
+  <button class="btn" id="btn-dl" style="display:none">☁️ Télécharger S3</button>
+  <button class="btn" id="btn-sel" title="Glisser un rectangle rouge sur la carte, puis Entrée">🔲 Sélection zone</button>
+  <button class="btn" id="btn-valider" style="display:none" title="Entrée">✔ Charger la zone</button>
+  <span id="stats">Aucun dossier scanné</span>
+  <span id="dl-status" style="font-size:.62rem;color:#89b4fa;display:none"></span>
+</div>
+
+<div id="map"></div>
+<div id="tip"></div>
+
+<div id="aws-panel">
+  <button id="aws-close">✕</button>
+  <h2>☁️ Téléchargement Copernicus S3</h2>
+  <div id="aws-cmd"></div>
+  <div class="aws-note">
+    <b>Prérequis :</b> AWS CLI installé (<code>aws --version</code>)<br>
+    Copier la commande, l'exécuter dans un terminal dans le dossier <b>copernicus/</b><br>
+    Le fichier sera placé dans le sous-dossier du nom de la tuile.<br>
+    <b>Aucun compte AWS requis</b> (données publiques, --no-sign-request)
+  </div>
+</div>
+
+<script>
+/* ── parseTileName ── E : nom ou chemin de fichier → T : motif
+   N|S dd _00_ E|W ddd _00 → S : { swLat, swLon } (coin sud-ouest) ou null. */
+function parseTileName(s) {
+  const m = s.match(/([NS])(\d{2})_00_([EW])(\d{3})_00/);
+  if (!m) return null;
+  return {
+    swLat: parseInt(m[2]) * (m[1] === 'S' ? -1 : 1),
+    swLon: parseInt(m[4]) * (m[3] === 'W' ? -1 : 1),
+  };
+}
+/* ── tileName ── E : swLat, swLon → T : hémisphères et zéros de tête →
+   S : nom de tuile Copernicus_DSM_COG_10_…_DEM. */
+function tileName(swLat, swLon) {
+  const ns = swLat >= 0 ? 'N' : 'S';
+  const ew = swLon >= 0 ? 'E' : 'W';
+  return `Copernicus_DSM_COG_10_${ns}${Math.abs(swLat).toString().padStart(2,'0')}`
+       + `_00_${ew}${Math.abs(swLon).toString().padStart(3,'0')}_00_DEM`;
+}
+/* tKey — E : lat, lon → S : clé « lat,lon » des tables de tuiles. */
+const tKey = (lat, lon) => `${lat},${lon}`;
+
+const downloaded = new Map();
+let   activeKey  = null;
+
+const carteEl = document.getElementById('map');
+const map = new DsmCarte(carteEl, { lat: 20, lon: 0, zoom: 2, zoomMax: 20 });
+map.ajouterCouche(
+  'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+  { attribution: '© Esri © Maxar', zMax: 17 }
+);
+const CARTO_KEY = 'cb1_401e_1_77513c5e0d815ff115135c25';   // clé gratuite : carto.com/basemaps/apikey — vide = étiquettes Esri
+if (CARTO_KEY)
+  map.ajouterCouche(
+    'https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png?key=' + CARTO_KEY,
+    { opacite: 0.8, sous: ['a', 'b', 'c', 'd'], zMax: 20, attribution: '© CARTO © OpenStreetMap' }
+  );
+else
+  map.ajouterCouche(
+    'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
+    { opacite: 0.8, zMax: 19, attribution: '© Esri' }
+  );
+
+/* ── bornes ── E : deux coins (lat, lon) → T : rectangle normalisé →
+   S : { s, w, n, e } avec getWest/getEast/getSouth/getNorth. */
+function bornes(lat1, lon1, lat2, lon2) {
+  const b = { s: Math.min(lat1, lat2), n: Math.max(lat1, lat2),
+              w: Math.min(lon1, lon2), e: Math.max(lon1, lon2) };
+  b.getWest = () => b.w; b.getEast = () => b.e;
+  b.getSouth = () => b.s; b.getNorth = () => b.n;
+  return b;
+}
+
+/* Grille des tuiles Copernicus 1°×1° et rectangle de sélection */
+/* ── Calque Copernicus ── E : vue de la carte → T : cellules 1°×1°
+   visibles (toutes dès le zoom 3 et ≤ 20 000, sinon seulement les
+   disponibles et l'active) : jaune = active, vert = disponible, gris =
+   grille ; rectangle de sélection en rouge → S : dessin. */
+map.ajouterDessin(function (c2, m) {
+  const W = m.canvas.clientWidth, H = m.canvas.clientHeight, z = m.zoom();
+  const nw = m.versGeo(0, 0), se = m.versGeo(W, H);
+  const latA = Math.max(-90, Math.floor(se.lat)), latB = Math.min(89, Math.floor(nw.lat));
+  const lonA = Math.max(-180, Math.floor(nw.lon)), lonB = Math.min(179, Math.floor(se.lon));
+  const tout = z >= 3 && (latB - latA + 1) * (lonB - lonA + 1) <= 20000;
+  /* cellule — E : coin sud-ouest → T : style selon l'état de la tuile,
+     rectangle projeté → S : dessin. */
+  function cellule(swLat, swLon) {
+    const k = tKey(swLat, swLon), isDL = downloaded.has(k), isActive = k === activeKey;
+    if (!isDL && !isActive && !tout) return;
+    const p0 = m.versEcran(swLat + 1, swLon), p1 = m.versEcran(swLat, swLon + 1);
+    const w = p1.x - p0.x, h = p1.y - p0.y;
+    if (w < 0.5 || h < 0.5) return;
+    if (isActive) {
+      c2.fillStyle = 'rgba(250,200,50,.4)'; c2.fillRect(p0.x, p0.y, w, h);
+      c2.strokeStyle = '#f8c800'; c2.lineWidth = 2; c2.strokeRect(p0.x, p0.y, w, h);
+    } else if (isDL) {
+      c2.fillStyle = 'rgba(80,200,80,.30)'; c2.fillRect(p0.x, p0.y, w, h);
+      c2.strokeStyle = '#2a9a2a'; c2.lineWidth = z >= 5 ? 1 : 0.5; c2.strokeRect(p0.x, p0.y, w, h);
+    } else {
+      c2.strokeStyle = 'rgba(130,130,180,.18)'; c2.lineWidth = 0.4; c2.strokeRect(p0.x, p0.y, w, h);
+    }
+  }
+  if (tout) {
+    for (let la = latA; la <= latB; la++) for (let lo = lonA; lo <= lonB; lo++) cellule(la, lo);
+  } else {
+    for (const k of downloaded.keys()) { const p = k.split(','); cellule(+p[0], +p[1]); }
+    if (activeKey && !downloaded.has(activeKey)) { const p = activeKey.split(','); cellule(+p[0], +p[1]); }
+  }
+  if (selRect) {
+    const a = m.versEcran(selRect.n, selRect.w), b = m.versEcran(selRect.s, selRect.e);
+    c2.fillStyle = 'rgba(255,0,0,.15)'; c2.fillRect(a.x, a.y, b.x - a.x, b.y - a.y);
+    c2.strokeStyle = '#ff0000'; c2.lineWidth = 2; c2.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y);
+  }
+});
+const copGrid = { redraw: () => map.redessiner() };
+
+const tip = document.getElementById('tip');
+map.on('mousemove', e => {
+  const swLat = Math.floor(e.lat);
+  const swLon = Math.floor(e.lon);
+  const k = tKey(swLat, swLon);
+  const name = tileName(swLat, swLon);
+  if (downloaded.has(k)) {
+    carteEl.style.cursor = 'pointer';
+    tip.textContent = '✓ ' + name;
+    tip.style.color = '#a6e3a1';
+  } else {
+    carteEl.style.cursor = 'pointer';
+    tip.textContent = '☁ ' + name + ' — cliquer pour télécharger';
+    tip.style.color = '#89b4fa';
+  }
+  tip.style.display = 'block';
+  tip.style.left = (e.ev.clientX + 14) + 'px';
+  tip.style.top  = (e.ev.clientY - 26) + 'px';
+});
+map.on('mouseout', () => { tip.style.display = 'none'; });
+
+const bc = new BroadcastChannel('copernicus_dsm');
+let dsmWindow  = null;
+let pendingFile = null;
+let pendingGrid = null;
+
+bc.onmessage = e => {
+  if (e.data === 'ready') {
+    if (pendingFile) {
+      bc.postMessage({ type: 'loadFile', file: pendingFile });
+      pendingFile = null;
+    } else if (pendingGrid) {
+      bc.postMessage(pendingGrid);
+      pendingGrid = null;
+    }
+  }
+};
+
+/* ── awsCmd ── E : swLat, swLon → S : commande « aws s3 sync » de la tuile
+   (bucket public copernicus-dem-30m, fichier *_DEM.tif seul). */
+function awsCmd(swLat, swLon) {
+  const name = tileName(swLat, swLon);
+  const s3path = `s3://copernicus-dem-30m/${name}/`;
+  return `aws s3 sync ${s3path} ./${name}/ --no-sign-request --exclude "*" --include "*_DEM.tif"`;
+}
+
+/* afficherAwsPanel — E : tuile → T : affiche sa commande S3 → S : aucune. */
+function afficherAwsPanel(swLat, swLon) {
+  const name = tileName(swLat, swLon);
+  document.getElementById('aws-cmd').textContent = awsCmd(swLat, swLon);
+  document.getElementById('aws-panel').style.display = 'block';
+  document.getElementById('dl-status').style.display = 'inline';
+  document.getElementById('dl-status').textContent   = '→ ' + name;
+}
+
+/* afficherAwsPanelMulti — E : liste de tuiles → T : affiche une commande
+   S3 par tuile manquante → S : aucune. */
+function afficherAwsPanelMulti(tileKeys) {
+  const lines = tileKeys.map(([la, lo]) => awsCmd(la, lo));
+  document.getElementById('aws-cmd').textContent = lines.join('\n');
+  document.getElementById('aws-panel').style.display = 'block';
+  document.getElementById('dl-status').style.display = 'inline';
+  document.getElementById('dl-status').textContent =
+    `→ ${tileKeys.length} tuile(s) manquante(s)`;
+}
+
+document.getElementById('aws-close').addEventListener('click', () => {
+  document.getElementById('aws-panel').style.display = 'none';
+  document.getElementById('dl-status').style.display = 'none';
+});
+
+document.getElementById('aws-cmd').addEventListener('click', function() {
+  navigator.clipboard.writeText(this.textContent).then(() => {
+    const orig = this.style.borderColor;
+    this.style.borderColor = '#a6e3a1';
+    setTimeout(() => { this.style.borderColor = orig; }, 600);
+  });
+});
+
+/* Clic sur une tuile : disponible → l'envoie à dsm.html (ouvre la fenêtre
+   au besoin) ; absente → commande S3. */
+map.on('click', e => {
+  if (selMode) return;
+  const swLat = Math.floor(e.lat);
+  const swLon = Math.floor(e.lon);
+  const k = tKey(swLat, swLon);
+
+  if (downloaded.has(k)) {
+    const file = downloaded.get(k);
+    activeKey  = k;
+    copGrid.redraw();
+    map.cadrer(swLat, swLon, swLat + 1, swLon + 1, 9);
+    document.getElementById('aws-panel').style.display = 'none';
+
+    if (!dsmWindow || dsmWindow.closed) {
+      pendingFile = file;
+      dsmWindow = window.open('dsm.html', 'dsmViewer');
+      if (!dsmWindow) {
+        document.getElementById('stats').textContent =
+          '⚠ Popup bloqué — autorisez les popups pour ce fichier puis recliquez';
+        pendingFile = null;
+      }
+    } else {
+      bc.postMessage({ type: 'loadFile', file });
+      dsmWindow.focus();
+    }
+  } else {
+    afficherAwsPanel(swLat, swLon);
+    map.cadrer(swLat, swLon, swLat + 1, swLon + 1, 9);
+  }
+});
+
+let selMode    = false;
+let selecting  = false;
+let selStart   = null;
+let selRect    = null;
+let selPending = false;
+
+/* ── setSelMode ── E : booléen → T : bascule le mode sélection (curseur,
+   déplacement de carte désactivé) → S : aucune. */
+function setSelMode(on) {
+  selMode = on;
+  document.getElementById('btn-sel').classList.toggle('active', on);
+  if (on) { map.glisser = false; carteEl.style.cursor = 'crosshair'; }
+  else    { map.glisser = true;  carteEl.style.cursor = ''; }
+  if (!on) clearSelection();
+}
+
+/* clearSelection — E : aucune → T : efface le rectangle, masque Valider. */
+function clearSelection() {
+  if (selRect) { selRect = null; map.redessiner(); }
+  document.getElementById('btn-valider').style.display = 'none';
+}
+
+document.getElementById('btn-sel').addEventListener('click', () => setSelMode(!selMode));
+document.getElementById('btn-valider').addEventListener('click', () => validerSelection());
+
+map.on('mousedown', e => {
+  if (!selMode) return;
+  selecting = true;
+  selStart  = { lat: e.lat, lon: e.lon };
+  clearSelection();
+});
+map.on('mousemove', e => {
+  if (!selMode || !selecting) return;
+  selRect = bornes(selStart.lat, selStart.lon, e.lat, e.lon);
+  map.redessiner();
+});
+map.on('mouseup', () => {
+  if (!selMode || !selecting) return;
+  selecting = false;
+  if (selRect) document.getElementById('btn-valider').style.display = 'inline-block';
+});
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && selMode && selRect && !selecting) {
+    e.preventDefault(); validerSelection();
+  } else if (e.key === 'Escape' && selMode) {
+    e.preventDefault(); setSelMode(false);
+  }
+});
+
+/* ── readTiffTags ── (copie de dsm-worker-tiff.js) E : ArrayBuffer TIFF →
+   T : premier IFD, tags utiles → S : objet t. */
+function readTiffTags(buf) {
+  var v = new DataView(buf), le = (v.getUint16(0, true) === 0x4949);
+  var r16 = function(o){return v.getUint16(o,le);};
+  var r32 = function(o){return v.getUint32(o,le);};
+  var ifd = r32(4), t = {}, ne = r16(ifd);
+  for (var i=0;i<ne;i++) {
+    var base=ifd+2+i*12, tag=r16(base), type=r16(base+2), cnt=r32(base+4), vo=base+8;
+    (function(tag,type,cnt,vo){
+      /* vals — E : tag courant → S : tableau de ses valeurs. */
+      function vals(){
+        var sz=[0,1,1,2,4,8,1,1,2,4,8,4,8][type]||1;
+        var start=sz*cnt>4?r32(vo):vo, arr=[];
+        for(var j=0;j<cnt;j++){
+          var p=start+j*sz;
+          if(type===3)arr.push(v.getUint16(p,le));
+          else if(type===4)arr.push(v.getUint32(p,le));
+          else if(type===12)arr.push(v.getFloat64(p,le));
+          else if(type===16)arr.push(Number(v.getBigUint64(p,le)));
+          else arr.push(v.getUint32(p,le));
+        }
+        return arr;
+      }
+      switch(tag){
+        case 256:t.width=vals()[0];break;    case 257:t.height=vals()[0];break;
+        case 258:t.bps=vals()[0];break;      case 317:t.predictor=vals()[0];break;
+        case 259:t.compression=vals()[0];break;
+        case 322:t.tileW=vals()[0];break;    case 323:t.tileH=vals()[0];break;
+        case 324:t.tileOffsets=vals();break; case 325:t.tileByteCounts=vals();break;
+        case 339:t.sampleFormat=vals()[0];break;
+        case 33550:t.pixelScale=vals();break; case 33922:t.tiepoint=vals();break;
+      }
+    })(tag,type,cnt,vo);
+  }
+  return t;
+}
+
+/* ── checkTiff ── E : tags, nom → T : exige float32 tuilé deflate
+   predictor 3 → S : rien ou exception. */
+function checkTiff(t, nom){
+  var e=[];
+  if(!t.tileW||!t.tileH||!t.tileOffsets) e.push('non tuilé');
+  if(t.compression!==8&&t.compression!==32946) e.push('compression '+t.compression+' (deflate attendu)');
+  if(t.predictor!==3) e.push('predictor '+(t.predictor||1)+' (3 attendu)');
+  if(t.bps!==32) e.push(t.bps+' bits (32 attendus)');
+  if(t.sampleFormat!==3) e.push('sampleFormat '+(t.sampleFormat||1)+' (flottant attendu)');
+  if(e.length) throw new Error(nom+' : GeoTIFF non supporté — '+e.join(', '));
+}
+
+const ZONE_WORKER_SRC = `
+/* ── inflateNative ── (copie) E : flux zlib → S : Promise(octets
+   décompressés), via DecompressionStream('deflate-raw'). */
+async function inflateNative(uint8){
+  var raw=uint8.slice(2,uint8.length-4);
+  var ds=new DecompressionStream('deflate-raw');
+  var writer=ds.writable.getWriter(), reader=ds.readable.getReader();
+  writer.write(raw).then(function(){writer.close();});
+  var chunks=[], totalLen=0;
+  while(true){var r=await reader.read(); if(r.done)break; chunks.push(r.value); totalLen+=r.value.length;}
+  var out=new Uint8Array(totalLen), off=0;
+  for(var i=0;i<chunks.length;i++){out.set(chunks[i],off);off+=chunks[i].length;}
+  return out;
+}
+/* ── decodeTile ── (copie) E : buffer, décalage, taille, tileW, tileH →
+   S : Promise(Float32Array) après predictor 3. */
+async function decodeTile(buf,offset,byteCount,tileW,tileH){
+  var raw=await inflateNative(new Uint8Array(buf,offset,byteCount));
+  var rowBytes=tileW*4, out=new Float32Array(tileW*tileH), tmp=new Uint8Array(out.buffer);
+  for(var row=0;row<tileH;row++){
+    var rs=row*rowBytes;
+    for(var i=rs+1;i<rs+rowBytes;i++) raw[i]=(raw[i]+raw[i-1])&0xFF;
+    var base=row*tileW;
+    for(var i=0;i<tileW;i++){
+      tmp[(base+i)*4+0]=raw[rs+3*tileW+i]; tmp[(base+i)*4+1]=raw[rs+2*tileW+i];
+      tmp[(base+i)*4+2]=raw[rs+1*tileW+i]; tmp[(base+i)*4+3]=raw[rs+0*tileW+i];
+    }
+  }
+  return out;
+}
+/* ── decodeWindow ── E : buffer, tags, fenêtre (col0, row0, cw, rh) → T :
+   décode seulement les tuiles internes qui intersectent la fenêtre et
+   recopie la partie commune → S : Promise(Float32Array cw × rh). */
+async function decodeWindow(buf,t,col0,row0,cw,rh){
+  var tileW=t.tileW, tileH=t.tileH, tilesX=Math.ceil(t.width/tileW);
+  var out=new Float32Array(cw*rh);
+  var txA=Math.max(0,Math.floor(col0/tileW)), txB=Math.min(tilesX-1,Math.floor((col0+cw-1)/tileW));
+  var tyA=Math.max(0,Math.floor(row0/tileH)), tyB=Math.min(Math.ceil(t.height/tileH)-1,Math.floor((row0+rh-1)/tileH));
+  for(var ty=tyA;ty<=tyB;ty++){
+    for(var tx=txA;tx<=txB;tx++){
+      var idx=ty*tilesX+tx;
+      var data=await decodeTile(buf,t.tileOffsets[idx],t.tileByteCounts[idx],tileW,tileH);
+      var tw=Math.min(tileW,t.width-tx*tileW), th=Math.min(tileH,t.height-ty*tileH);
+      var r0=Math.max(row0,ty*tileH), r1=Math.min(row0+rh,ty*tileH+th);
+      var c0=Math.max(col0,tx*tileW), c1=Math.min(col0+cw,tx*tileW+tw);
+      for(var r=r0;r<r1;r++){
+        var srcRow=(r-ty*tileH)*tileW, dstRow=(r-row0)*cw;
+        for(var c=c0;c<c1;c++) out[dstRow+(c-col0)]=data[srcRow+(c-tx*tileW)];
+      }
+    }
+  }
+  return out;
+}
+/* Worker de zone — E : 'window' (buffer, tags, fenêtre) → S :
+   'window-done' (données) ou 'window-error'. */
+self.onmessage=async function(e){
+  if(e.data.type!=='window') return;
+  try{
+    var out=await decodeWindow(e.data.buffer,e.data.tags,e.data.col0,e.data.row0,e.data.cw,e.data.rh);
+    self.postMessage({type:'window-done',reqId:e.data.reqId,data:out},[out.buffer]);
+  }catch(err){
+    self.postMessage({type:'window-error',reqId:e.data.reqId,msg:err.message});
+  }
+};
+`;
+
+let zoneWorker = null, zoneReqId = 0;
+const zonePending = new Map();
+
+/* ── spawnZoneWorker ── E : aucune → T : crée le Worker de décodage de
+   fenêtres ; réponses aiguillées par numéro de requête ; erreur du Worker
+   → toutes les requêtes en attente rejetées, Worker recréé à la prochaine
+   demande → S : Worker. */
+function spawnZoneWorker() {
+  const blob = new Blob([ZONE_WORKER_SRC], { type: 'application/javascript' });
+  const url  = URL.createObjectURL(blob);
+  const w    = new Worker(url);
+  URL.revokeObjectURL(url);
+  w.onmessage = e => {
+    const d = e.data, cb = zonePending.get(d.reqId);
+    if (!cb) return;
+    zonePending.delete(d.reqId);
+    if (d.type === 'window-done') cb.resolve(d.data);
+    else cb.reject(new Error(d.msg || 'Erreur décodage fenêtre'));
+  };
+  w.onerror = e => {
+    if (e && e.preventDefault) e.preventDefault();
+    const err = new Error('Worker de zone : ' + ((e && e.message) || 'erreur inconnue'));
+    zonePending.forEach(cb => cb.reject(err));
+    zonePending.clear();
+    w.terminate();
+    if (zoneWorker === w) zoneWorker = null;
+  };
+  return w;
+}
+
+/* ── decodeTileWindow ── E : buffer (transféré), tags, fenêtre → T : requête
+   numérotée au Worker de zone → S : Promise(Float32Array). */
+function decodeTileWindow(buf, tags, col0, row0, cw, rh) {
+  if (!zoneWorker) zoneWorker = spawnZoneWorker();
+  const reqId = ++zoneReqId;
+  return new Promise((resolve, reject) => {
+    zonePending.set(reqId, { resolve, reject });
+    zoneWorker.postMessage({
+      type: 'window', reqId, buffer: buf,
+      tags: { tileW: tags.tileW, tileH: tags.tileH, width: tags.width, height: tags.height,
+              tileOffsets: tags.tileOffsets, tileByteCounts: tags.tileByteCounts },
+      col0, row0, cw, rh
+    }, [buf]);
+  });
+}
+
+const MAX_SEND_DIM = 4096;
+
+/* ── assemblerEtEnvoyer ──────────────────────────────────────────────────
+   ENTRÉE     : rectangle (getWest/East/South/North)
+   TRAITEMENT : tuiles 1° couvertes ; manquantes → commandes S3 et arrêt ;
+                tags et géoréférence de chaque tuile ; pas le plus fin ;
+                rectangle rendu carré en pixels, borné à la couverture,
+                recentré ; pour chaque tuile, fenêtre décodée en Worker puis
+                copiée (même résolution) ou rééchantillonnée bilinéairement
+                dans la mosaïque ; réduction par moyenne des pixels
+                terrestres si > 4096 px ; envoi
+   SORTIE     : Promise ; grille et emprise envoyées à dsm.html
+   ALGO       : « Mosaïque carrée multi-tuiles Copernicus décodée par
+                fenêtres, réduite à 4096² au plus. »
+   ─────────────────────────────────────────────────────────────────── */
+async function assemblerEtEnvoyer(bounds) {
+  const EPS = 1e-9;
+  let west = bounds.getWest(), east = bounds.getEast();
+  let south = bounds.getSouth(), north = bounds.getNorth();
+
+  const latA = Math.floor(south), latB = Math.floor(north - EPS);
+  const lonA = Math.floor(west),  lonB = Math.floor(east  - EPS);
+  if (latB < latA || lonB < lonA) throw new Error('Sélection trop petite');
+
+  const tileKeys = [];
+  for (let la = latA; la <= latB; la++)
+    for (let lo = lonA; lo <= lonB; lo++)
+      tileKeys.push([la, lo]);
+
+  const missing = tileKeys.filter(([la, lo]) => !downloaded.has(tKey(la, lo)));
+  if (missing.length) {
+    afficherAwsPanelMulti(missing);
+    throw new Error(`${missing.length} tuile(s) manquante(s) — voir panneau S3`);
+  }
+  document.getElementById('aws-panel').style.display = 'none';
+  document.getElementById('stats').textContent = 'Lecture des tags TIFF…';
+
+  const tileInfo = [];
+  for (const [la, lo] of tileKeys) {
+    const file = downloaded.get(tKey(la, lo));
+    const buf  = await file.arrayBuffer();
+    const t    = readTiffTags(buf);
+    checkTiff(t, file.name);
+    if (!t.tiepoint || !t.pixelScale) throw new Error('Tuile sans géoréférence : ' + file.name);
+    const geo = {
+      lonMin: t.tiepoint[3], latMax: t.tiepoint[4],
+      lonMax: t.tiepoint[3] + t.width  * t.pixelScale[0],
+      latMin: t.tiepoint[4] - t.height * t.pixelScale[1]
+    };
+    tileInfo.push({ file, buf, t, geo, lonStep: t.pixelScale[0], latStep: t.pixelScale[1] });
+  }
+
+  const lonStep = Math.min(...tileInfo.map(ti => ti.lonStep));
+  const latStep = Math.min(...tileInfo.map(ti => ti.latStep));
+
+  let wPx = Math.round((east - west) / lonStep);
+  let hPx = Math.round((north - south) / latStep);
+  if (wPx < 1 || hPx < 1) throw new Error('Sélection trop petite');
+  const side = Math.max(wPx, hPx);
+  if (wPx < side) { const extra = (side - wPx) * lonStep; west -= extra/2; east += extra/2; }
+  if (hPx < side) { const extra = (side - hPx) * latStep; south -= extra/2; north += extra/2; }
+
+  const covWest  = Math.min(...tileInfo.map(ti => ti.geo.lonMin));
+  const covEast  = Math.max(...tileInfo.map(ti => ti.geo.lonMax));
+  const covSouth = Math.min(...tileInfo.map(ti => ti.geo.latMin));
+  const covNorth = Math.max(...tileInfo.map(ti => ti.geo.latMax));
+  west  = Math.max(west, covWest);  east  = Math.min(east, covEast);
+  south = Math.max(south, covSouth); north = Math.min(north, covNorth);
+  wPx = Math.round((east - west) / lonStep);
+  hPx = Math.round((north - south) / latStep);
+  const sideFinal = Math.min(wPx, hPx);
+  if (sideFinal < 2) throw new Error('Sélection hors des tuiles disponibles');
+  const cx = (west + east) / 2, cy = (south + north) / 2;
+  west  = cx - sideFinal * lonStep / 2; east  = cx + sideFinal * lonStep / 2;
+  south = cy - sideFinal * latStep / 2; north = cy + sideFinal * latStep / 2;
+
+  const mosaic = new Float32Array(sideFinal * sideFinal);
+  document.getElementById('stats').textContent = `Décodage 0/${tileInfo.length} tuile(s)…`;
+
+  let done = 0;
+  for (const ti of tileInfo) {
+    const iWest = Math.max(west, ti.geo.lonMin),  iEast  = Math.min(east, ti.geo.lonMax);
+    const iSouth = Math.max(south, ti.geo.latMin), iNorth = Math.min(north, ti.geo.latMax);
+    if (iEast <= iWest || iNorth <= iSouth) { done++; continue; }
+
+    const col0 = Math.max(0, Math.floor((iWest - ti.geo.lonMin) / ti.lonStep));
+    const colE = Math.min(ti.t.width,  Math.ceil((iEast - ti.geo.lonMin) / ti.lonStep));
+    const row0 = Math.max(0, Math.floor((ti.geo.latMax - iNorth) / ti.latStep));
+    const rowE = Math.min(ti.t.height, Math.ceil((ti.geo.latMax - iSouth) / ti.latStep));
+    const cw = colE - col0, rh = rowE - row0;
+    if (cw <= 0 || rh <= 0) { done++; continue; }
+
+    const win = await decodeTileWindow(ti.buf, ti.t, col0, row0, cw, rh);
+
+    const dstX0 = Math.round((ti.geo.lonMin + col0 * ti.lonStep - west) / lonStep);
+    const dstY0 = Math.round((north - (ti.geo.latMax - row0 * ti.latStep)) / latStep);
+    const sameRes = Math.abs(ti.lonStep - lonStep) < 1e-12 && Math.abs(ti.latStep - latStep) < 1e-12;
+
+    if (sameRes) {
+      for (let r = 0; r < rh; r++) {
+        const dy = dstY0 + r; if (dy < 0 || dy >= sideFinal) continue;
+        for (let c = 0; c < cw; c++) {
+          const dx = dstX0 + c; if (dx < 0 || dx >= sideFinal) continue;
+          mosaic[dy*sideFinal + dx] = win[r*cw + c];
+        }
+      }
+    } else {
+      const dw = Math.round(cw * ti.lonStep / lonStep), dh = Math.round(rh * ti.latStep / latStep);
+      for (let r = 0; r < dh; r++) {
+        const dy = dstY0 + r; if (dy < 0 || dy >= sideFinal) continue;
+        const fy = r*(rh-1)/Math.max(1,dh-1), iy = Math.min(rh-2,Math.floor(fy)), ty = fy-iy;
+        for (let c = 0; c < dw; c++) {
+          const dx = dstX0 + c; if (dx < 0 || dx >= sideFinal) continue;
+          const fx = c*(cw-1)/Math.max(1,dw-1), ix = Math.min(cw-2,Math.floor(fx)), tx = fx-ix;
+          mosaic[dy*sideFinal+dx] =
+            win[iy*cw+ix]*(1-tx)*(1-ty) + win[iy*cw+ix+1]*tx*(1-ty) +
+            win[(iy+1)*cw+ix]*(1-tx)*ty + win[(iy+1)*cw+ix+1]*tx*ty;
+        }
+      }
+    }
+    done++;
+    document.getElementById('stats').textContent = `Décodage ${done}/${tileInfo.length} tuile(s)…`;
+  }
+
+  let outGrid = mosaic, outSide = sideFinal;
+  if (sideFinal > MAX_SEND_DIM) {
+    const k = Math.ceil(sideFinal / MAX_SEND_DIM);
+    outSide = Math.ceil(sideFinal / k);
+    outGrid = new Float32Array(outSide * outSide);
+    for (let r = 0; r < outSide; r++) {
+      const r0 = r*k, r1 = Math.min(sideFinal, r0+k);
+      for (let c = 0; c < outSide; c++) {
+        const c0 = c*k, c1 = Math.min(sideFinal, c0+k);
+        let sum = 0, n = 0;
+        for (let rr = r0; rr < r1; rr++)
+          for (let cc = c0; cc < c1; cc++) {
+            const v = mosaic[rr*sideFinal+cc];
+            if (v > 0.5 && v < 9000) { sum += v; n++; }
+          }
+        outGrid[r*outSide+c] = n ? sum/n : 0;
+      }
+    }
+  }
+
+  document.getElementById('stats').textContent = `Zone ${outSide}×${outSide} px assemblée`;
+  envoyerZone(outGrid, outSide, outSide, { lonMin: west, lonMax: east, latMin: south, latMax: north }, lonStep);
+}
+
+/* ── envoyerZone ── E : grille, w, h, geo, résolution source → T : message
+   loadGrid par BroadcastChannel, ou mis en attente le temps d'ouvrir
+   dsm.html → S : aucune. */
+function envoyerZone(grid, w, h, geo, srcRes) {
+  const msg = { type: 'loadGrid', grid, w, h, geo, srcRes };
+  if (!dsmWindow || dsmWindow.closed) {
+    pendingGrid = msg;
+    dsmWindow = window.open('dsm.html', 'dsmViewer');
+    if (!dsmWindow) {
+      document.getElementById('stats').textContent =
+        '⚠ Popup bloqué — autorisez les popups pour ce fichier puis relancez';
+      pendingGrid = null;
+    }
+  } else {
+    bc.postMessage(msg);
+    dsmWindow.focus();
+  }
+}
+
+/* ── validerSelection ── E : rectangle courant → T : verrouille le bouton,
+   assemblerEtEnvoyer, sort du mode sélection ; erreur affichée →
+   S : Promise. */
+async function validerSelection() {
+  if (!selRect || selPending) return;
+  selPending = true;
+  document.getElementById('btn-valider').disabled = true;
+  try {
+    await assemblerEtEnvoyer(selRect);
+    setSelMode(false);
+  } catch (err) {
+    document.getElementById('stats').textContent = '⚠ ' + err.message;
+  } finally {
+    selPending = false;
+    document.getElementById('btn-valider').disabled = false;
+  }
+}
+
+document.getElementById('btn-open').addEventListener('click', () => {
+  document.getElementById('folder-in').click();
+});
+/* Choix du dossier : indexe les .tif dont le nom est une tuile Copernicus. */
+document.getElementById('folder-in').addEventListener('change', function(e) {
+  downloaded.clear(); activeKey = null;
+  for (const f of Array.from(e.target.files)) {
+    if (!/\.tif$/i.test(f.name)) continue;
+    const parsed = parseTileName(f.webkitRelativePath || f.name);
+    if (parsed) downloaded.set(tKey(parsed.swLat, parsed.swLon), f);
+  }
+  copGrid.redraw();
+  document.getElementById('stats').textContent =
+    `${downloaded.size} tuile(s) disponible(s)`;
+});
+</script>
+</body>
+</html>

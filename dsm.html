@@ -1,0 +1,2182 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<!-- ═══════════════════════════════════════════════════════════════════
+     FICHIER : dsm.html - v27/09/2026
+     OBJET   : visualiseur de modèle numérique de terrain et simulation
+               paléoclimatique d'un glacier : hypsométrie, courbes, ombres,
+               insolation, température, lignes de partage, filet adaptatif,
+               bilan de masse, écoulement, glissement basal, foehn ; vidéo
+               des ombres, enregistrement, profileur.
+     AUTEUR  : Eric P.
+     RELECTURE : Opus 5.5
+     DÉPEND  : dsm-carte.js, dsm-astro.js, dsm-worker-tiff.js, dsm-ombre.js,
+               dsm-insol.js, dsm-temp.js, dsm-partage.js, dsm-mesh.js,
+               dsm-filet.js, dsm-fil3d.js, dsm-foehn.js, dsm-flux.js,
+               dsm-basal.js, dsm-worker-glacier.js, dsm-worker-flux.js ;
+               map.html (envoi des tuiles par BroadcastChannel « dsm-tile ») ;
+               tuiles d'étiquettes Carto (clé CARTO_KEY) ou Esri
+     ENTRÉE  : GeoTIFF Copernicus ou grille assemblée reçus de map.html
+     ═══════════════════════════════════════════════════════════════════ -->
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DSM — En attente</title>
+
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:100%;height:100%;overflow:hidden;background:#0d1117;
+  color:#cdd6f4;font-family:'Segoe UI',Arial,sans-serif}
+#topbar{position:fixed;top:0;left:0;right:0;height:42px;z-index:2000;
+  display:flex;align-items:center;gap:12px;padding:0 16px;
+  background:rgba(13,17,23,.88);backdrop-filter:blur(4px);
+  border-bottom:1px solid #2a2d3d}
+#titre{font-size:.82rem;font-weight:600;color:#b4befe;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;flex:1}
+.btn{font-size:.70rem;padding:3px 11px;border:1px solid #45475a;border-radius:4px;
+  background:#181825;color:#cdd6f4;cursor:pointer;white-space:nowrap}
+.btn:hover{background:#2a2d3d;border-color:#89b4fa}
+.btn:disabled{opacity:.3;cursor:default}
+#btn-rec.recording{border-color:#f38ba8;color:#f38ba8}
+#btn-video.running{border-color:#a6e3a1;color:#a6e3a1}
+
+#btn-ombre{min-width:100px}
+#btn-ombre.active{border-color:#f9e2af;color:#f9e2af}
+#btn-insol.active{border-color:#fab387;color:#fab387}
+#btn-temp.active{border-color:#a6e3a1;color:#a6e3a1}
+#btn-partage.active{border-color:#f5c2e7;color:#f5c2e7}
+#btn-fil.active{border-color:#fab387;color:#fab387}
+#btn-flux.active{border-color:#f38ba8;color:#f38ba8}
+
+#ctrl-panel{
+  width:130px;flex-shrink:0;height:100%;
+  display:none;flex-direction:column;align-items:stretch;
+  padding:10px 6px 8px;gap:14px;
+  background:rgba(20,24,32,.85);border:1px solid #2a2d3d;border-radius:6px}
+#ctrl-panel.visible{display:flex}
+.ctrl-bloc{display:flex;flex-direction:column;align-items:stretch;gap:3px}
+.ctrl-label{font-size:.58rem;color:#a6adc8;letter-spacing:.06em;
+  text-align:center;padding:1px 0}
+.ctrl-label.actif{color:#f9e2af;background:rgba(249,226,175,.10);
+  border-radius:3px}
+.ctrl-row{display:flex;align-items:center;justify-content:space-between;gap:2px}
+.ctrl-pm{font-size:.75rem;padding:1px 6px;border:1px solid #45475a;border-radius:3px;
+  background:#181825;color:#cdd6f4;cursor:pointer;line-height:1.4;
+  user-select:none;flex-shrink:0}
+.ctrl-pm:hover{background:#2a2d3d;border-color:#89b4fa}
+.ctrl-val{font-size:.78rem;font-weight:700;color:#cdd6f4;
+  text-align:center;flex:1;font-family:'Courier New',monospace;
+  white-space:nowrap;overflow:hidden}
+.ctrl-bar-wrap{width:100%;height:8px;background:#1e2030;border-radius:4px;
+  cursor:pointer;position:relative;overflow:hidden}
+.ctrl-bar-fill{height:100%;border-radius:4px;background:#585b70;
+  pointer-events:none;transition:width .08s}
+#main{position:fixed;top:42px;left:0;right:0;bottom:26px;
+  display:flex;flex-direction:row;align-items:center;justify-content:center;
+  gap:8px;padding:0 8px;background:#0d1117}
+#wrap{position:relative;overflow:hidden;cursor:grab;background:#141820;flex-shrink:0}
+#wrap.dragging{cursor:grabbing}
+#wrap canvas{width:100%;height:100%;display:block}
+#lmap{position:absolute;top:0;left:0;width:100%;height:100%;
+  pointer-events:none;z-index:10;display:none;background:transparent}
+/* Légende cartographique du glacier (hors échelle hypsométrique) */
+#glac-leg{position:absolute;left:8px;bottom:8px;z-index:20;display:none;
+  pointer-events:none;font-size:.58rem;color:#cdd6f4;line-height:1.25;
+  background:rgba(13,17,23,.82);border:1px solid #2a2d3d;border-radius:5px;padding:6px 8px 5px}
+#glac-leg .gl-t{font-size:.56rem;letter-spacing:.08em;color:#a6adc8;margin-bottom:4px}
+#glac-leg .gl-l{display:flex;align-items:center;gap:6px;margin:2px 0}
+#glac-leg .gl-s{width:26px;height:9px;flex-shrink:0;border:1px solid rgba(255,255,255,.25)}
+#glac-leg .gl-f{width:26px;height:0;flex-shrink:0;border-top:2px solid}
+#glac-leg .gl-n{color:#7f849c;font-size:.5rem}
+#coords{position:absolute;top:8px;left:8px;z-index:20;
+  font-size:.65rem;font-family:'Courier New',monospace;color:#f5e0dc;
+  background:rgba(13,17,23,.78);padding:3px 9px;border-radius:4px;
+  pointer-events:none;white-space:nowrap;letter-spacing:.03em}
+#placeholder{position:absolute;inset:0;z-index:5;display:flex;
+  align-items:center;justify-content:center;color:#45475a;font-size:.85rem;
+  pointer-events:none;text-align:center;padding:20px}
+#legend-panel{width:72px;flex-shrink:0;height:100%;
+  display:flex;flex-direction:column;align-items:center;
+  padding:10px 4px 6px;gap:4px;
+  background:rgba(20,24,32,.85);border:1px solid #2a2d3d;border-radius:6px}
+#legend-panel .leg-title{font-size:.58rem;color:#a6adc8;letter-spacing:.05em}
+#lcv{width:60px;flex:1;display:block;border-radius:3px}
+#legend-panel .leg-unit{font-size:.55rem;color:#6c7086}
+#dsm-status{position:fixed;top:50px;right:8px;width:148px;z-index:1500;
+  display:flex;flex-direction:column;gap:6px;padding:8px 8px 6px;
+  background:rgba(20,24,32,.9);border:1px solid #2a2d3d;border-radius:6px}
+#dsm-status .hud-titre{font-size:.52rem;color:#585b70;text-align:center;letter-spacing:.5px}
+#deltaC{width:100%;height:64px;display:block;background:#11151c;border-radius:3px}
+#checklist{display:flex;flex-direction:column;gap:3px;padding:0 4px}
+.chk-row{display:flex;align-items:center;gap:5px;font-size:.55rem;color:#a6adc8}
+.chk-led{width:8px;height:8px;border-radius:50%;background:#313244;border:1px solid #45475a;flex-shrink:0;transition:background .3s}
+.chk-led.on{background:#a6e3a1;border-color:#a6e3a1;box-shadow:0 0 4px #a6e3a1}
+#prof-panel{margin-top:6px;border-top:1px solid #313244;padding-top:4px}
+#prof-panel .prof-head{display:flex;align-items:center;justify-content:space-between;
+  font-size:.52rem;color:#585b70;letter-spacing:.5px;margin-bottom:2px}
+#prof-reset{border:1px solid #45475a;background:#181825;color:#a6adc8;border-radius:3px;
+  font-size:.5rem;line-height:1;padding:2px 4px;cursor:pointer}
+#prof-reset:hover{background:#2a2d3d;border-color:#89b4fa;color:#89b4fa}
+#prof-table{width:100%;border-collapse:collapse;font-family:'Courier New',monospace;font-size:.52rem}
+#prof-table td{padding:1px 0;color:#a6adc8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#prof-table td.pf-nom{max-width:78px}
+#prof-table td.pf-pct{color:#f9e2af;text-align:right;width:30px}
+#prof-table td.pf-ms{color:#cdd6f4;text-align:right;width:44px}
+#prof-table tr.pf-lourd td.pf-pct{color:#f38ba8}
+#vbar{position:fixed;bottom:0;left:0;right:0;height:26px;z-index:2000;
+  display:flex;align-items:center;padding:0 12px;gap:10px;
+  background:rgba(13,17,23,.88);border-top:1px solid #1e2030;font-size:.62rem}
+#vstatus{flex:1;color:#a6e3a1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#vinfo{color:#45475a;white-space:nowrap}
+</style>
+</head>
+<body>
+
+<div id="topbar">
+  <span id="titre">DSM — En attente d'une tuile</span>
+  <button class="btn" id="btn-ombre" disabled>🌑 Ombre</button>
+  <button class="btn" id="btn-insol" disabled>☀️ Insol</button>
+  <button class="btn" id="btn-temp"  disabled>🌡 Temp</button>
+  <button class="btn" id="swap"      disabled>&#x21C4; Courbes de niveau</button>
+  <button class="btn" id="btn-partage">&#x26F0; Partage</button>
+  <button class="btn" id="btn-fil">&#x1F578; Fil</button>
+  <button class="btn" id="btn-fil3d">&#x1F5FB; 3D</button>
+  <button class="btn" id="btn-flux">&#x27A1; Flux</button>
+  <button class="btn" id="btn-carto" disabled>&#x1F5FA; Carto</button>
+  <button class="btn" id="btn-rec"   disabled>&#x23FA; REC</button>
+  <button class="btn" id="btn-video" disabled>🎬 Vidéo 365j</button>
+  <button class="btn" id="btn-glacier" disabled>❄️ Glacier</button>
+</div>
+
+<div id="dsm-status">
+  <div id="checklist">
+    <div class="chk-row"><span class="chk-led" id="led-map"></span>Map</div>
+    <div class="chk-row"><span class="chk-led" id="led-ombre"></span>Ombre</div>
+    <div class="chk-row"><span class="chk-led" id="led-insol"></span>Insol</div>
+    <div class="chk-row"><span class="chk-led" id="led-temp"></span>Temp</div>
+    <div class="chk-row"><span class="chk-led" id="led-partage"></span>Partage</div>
+    <div class="chk-row"><span class="chk-led" id="led-glacier"></span>Glacier</div>
+  </div>
+  <div class="hud-titre" id="deltaC-titre">ΔT °C — lat —</div>
+  <canvas id="deltaC" width="296" height="128"></canvas>
+  <div id="prof-panel">
+    <div class="prof-head"><span>⏱ PROFIL (ms/an, survol = détail)</span>
+      <button id="prof-reset" title="Remet les compteurs à zéro">↺ reset</button></div>
+    <table id="prof-table"><tbody></tbody></table>
+  </div>
+</div>
+
+<div id="main">
+  <div id="ctrl-panel">
+    <div class="ctrl-bloc" id="ctrl-bloc-0">
+      <span class="ctrl-label" id="ctrl-lbl-0">ANNÉE</span>
+      <div class="ctrl-row">
+        <button class="ctrl-pm" id="ctrl-plus-0">+</button>
+        <span class="ctrl-val" id="ctrl-val-0">2024</span>
+        <button class="ctrl-pm" id="ctrl-minus-0">−</button>
+      </div>
+      <div class="ctrl-bar-wrap" id="ctrl-bar-0">
+        <div class="ctrl-bar-fill" id="ctrl-fill-0" style="width:100%"></div>
+      </div>
+    </div>
+    <div class="ctrl-bloc" id="ctrl-bloc-1">
+      <span class="ctrl-label" id="ctrl-lbl-1">JOUR</span>
+      <div class="ctrl-row">
+        <button class="ctrl-pm" id="ctrl-plus-1">+</button>
+        <span class="ctrl-val" id="ctrl-val-1">21 Déc</span>
+        <button class="ctrl-pm" id="ctrl-minus-1">−</button>
+      </div>
+      <div class="ctrl-bar-wrap" id="ctrl-bar-1">
+        <div class="ctrl-bar-fill" id="ctrl-fill-1" style="width:97%"></div>
+      </div>
+    </div>
+    <div class="ctrl-bloc" id="ctrl-bloc-2">
+      <span class="ctrl-label" id="ctrl-lbl-2">HEURE SOLAIRE</span>
+      <div class="ctrl-row">
+        <button class="ctrl-pm" id="ctrl-plus-2">+</button>
+        <span class="ctrl-val" id="ctrl-val-2">12h00</span>
+        <button class="ctrl-pm" id="ctrl-minus-2">−</button>
+      </div>
+      <div class="ctrl-bar-wrap" id="ctrl-bar-2">
+        <div class="ctrl-bar-fill" id="ctrl-fill-2" style="width:50%"></div>
+      </div>
+    </div>
+    <div id="ctrl-info-rise" style="margin-top:4px;font-size:.60rem;color:#585b70;text-align:center;line-height:1.6">
+      <span id="ctrl-rise" style="color:#fab387">🌅 --h--</span><br>
+      <span id="ctrl-set"  style="color:#89b4fa">🌇 --h--</span>
+    </div>
+    <div id="ctrl-info-sun" style="font-size:.60rem;color:#585b70;text-align:center;margin-top:2px">
+      <span id="ctrl-sunpos">az —°  él —°</span>
+    </div>
+    <div style="font-size:.62rem;text-align:center;margin-top:2px;color:#45475a">
+      <span id="ctrl-ombre-ind">—</span>
+    </div>
+  </div>
+
+  <div id="wrap">
+    <canvas id="c" width="1024" height="1024"></canvas>
+    <div id="lmap"></div>
+    <div id="coords">&#x2014;</div>
+    <div id="glac-leg">
+      <div class="gl-t">L&#xc9;GENDE &#x2014; GLACIER</div>
+      <div class="gl-l"><span class="gl-s" style="background:linear-gradient(90deg,rgba(0,20,120,.6),rgb(0,120,255))"></span>Glace <span class="gl-n">mince &#x2192; &#xe9;paisse</span></div>
+      <div class="gl-l"><span class="gl-s" style="background:linear-gradient(90deg,rgba(100,200,255,.6),rgb(0,255,255))"></span>Neige / n&#xe9;v&#xe9; <span class="gl-n">mince &#x2192; &#xe9;paisse</span></div>
+      <div class="gl-l"><span class="gl-f" style="border-color:#00c000"></span>Front actif <span class="gl-n">glace &gt; 10 m au contact du sol libre</span></div>
+      <div class="gl-l"><span class="gl-f" style="border-color:#ff0000"></span>Extension maximale atteinte <span class="gl-n">front mince ou en retrait</span></div>
+      <div class="gl-l"><span class="gl-s" style="background:#8a8a8a"></span>Sol libre <span class="gl-n">ni neige ni glace (fond visible)</span></div>
+      <div class="gl-l" id="gl-flux" style="display:none"><span class="gl-s" style="border:none;background:linear-gradient(90deg,rgb(137,180,250),rgb(243,139,168))"></span>&#xc9;coulement <span class="gl-n">lent &#x2192; rapide (fl&#xe8;ches)</span></div>
+      <div class="gl-n" style="margin-top:3px">Teinte = d&#xe9;cile d'&#xe9;paisseur (neige + glace)</div>
+    </div>
+    <div id="placeholder">Cliquez sur une tuile verte dans map.html</div>
+  </div>
+  <div id="legend-panel">
+    <span class="leg-title">ALTITUDE</span>
+    <canvas id="lcv" width="60"></canvas>
+    <span class="leg-unit">m&#xe8;tres</span>
+  </div>
+</div>
+
+<div id="vbar">
+  <span id="vstatus">En attente</span>
+  <span id="vinfo"></span>
+</div>
+
+<script>
+
+const CTRL_ANNEE_MIN = -20000;
+const CTRL_ANNEE_MAX = 2100;
+let ctrlAnnee  = 2024;
+let ctrlJour   = 354;
+let ctrlHeure  = 12.0;
+let ctrlActif  = 1;
+
+/* ── ctrlRiseSet ── E : GEO, année et jour du panneau → T : orbite de
+   l'époque, sunRiseSet au centre de la tuile → S : { rise, set } (heures
+   solaires locales) ou null sans tuile. */
+function ctrlRiseSet() {
+  if (!GEO) return null;
+  var orb   = orbital(ctrlTka());
+  var pibar = orb.pib + Math.PI;
+  var lat   = (GEO.latMax + GEO.latMin) / 2;
+  var lon   = (GEO.lonMax + GEO.lonMin) / 2;
+  return sunRiseSet(ctrlJour + 1, orb.e, orb.eps, pibar, lat * Math.PI / 180, lon);
+}
+
+/* ── ctrlRendrePanneau ── E : ctrlAnnee, ctrlJour, ctrlHeure, ctrlActif →
+   T : valeurs et jauges des trois curseurs, lever/coucher, heure bornée
+   au jour, position du Soleil ; si une ombre est affichée, cale le pas
+   (ctrlMajPas) → S : affichage du panneau. */
+function ctrlRendrePanneau() {
+  document.getElementById('ctrl-val-0').textContent =
+    ctrlAnnee.toLocaleString('fr-FR').replace(/\u202f/g, '\u00a0');
+  var fA = (ctrlAnnee - CTRL_ANNEE_MIN) / (CTRL_ANNEE_MAX - CTRL_ANNEE_MIN);
+  document.getElementById('ctrl-fill-0').style.width = (fA * 100).toFixed(1) + '%';
+
+  document.getElementById('ctrl-val-1').textContent = jourVersDate(ctrlJour);
+  document.getElementById('ctrl-fill-1').style.width = (ctrlJour / 364 * 100).toFixed(1) + '%';
+
+  var rh   = ctrlRiseSet();
+  var rise = (rh && rh.rise >= 0) ? rh.rise : 0;
+  var setH = (rh && rh.set  >= 0) ? rh.set  : 24;
+  document.getElementById('ctrl-rise').textContent =
+    rh ? '\ud83c\udf05 ' + hDecToHHMM(rise) : '\ud83c\udf05 --h--';
+  document.getElementById('ctrl-set').textContent  =
+    rh ? '\ud83c\udf07 ' + hDecToHHMM(setH) : '\ud83c\udf07 --h--';
+
+  ctrlHeure = Math.max(rise, Math.min(setH, ctrlHeure));
+  insolHour = ctrlHeure;
+  document.getElementById('ctrl-val-2').textContent = hDecToHHMM(ctrlHeure);
+  var span = Math.max(0.01, setH - rise);
+  var fH   = Math.max(0, Math.min(1, (ctrlHeure - rise) / span));
+  document.getElementById('ctrl-fill-2').style.width = (fH * 100).toFixed(1) + '%';
+
+  if (GEO) {
+    var orb   = orbital(ctrlTka());
+    var pibar = orb.pib + Math.PI;
+    var lat   = (GEO.latMax + GEO.latMin) / 2;
+    var lon   = (GEO.lonMax + GEO.lonMin) / 2;
+    var pos   = sunPos(ctrlJour + 1, ctrlHeure, orb.e, orb.eps, pibar,
+                            lat * Math.PI / 180, lon);
+    document.getElementById('ctrl-sunpos').textContent =
+      'az ' + pos.az.toFixed(0) + '°  él ' + pos.el.toFixed(1) + '°';
+    if (ombreMask) ctrlMajPas(pos);
+  }
+
+  for (var i = 0; i < 3; i++) {
+    var lbl = document.getElementById('ctrl-lbl-' + i);
+    lbl.classList.toggle('actif', i === ctrlActif);
+  }
+}
+
+/* ── ctrlTka ── E : ctrlAnnee → T : (année − 1950) / 1000 → S : t_ka. */
+function ctrlTka() {
+  return (ctrlAnnee - 1950) / 1000;
+}
+
+/* ── ctrlMajPas ── E : position solaire (inutilisée), ctrlHeure → T : pas
+   d'ombre = (heure − début) / 15 min, borné → S : ombreStep ; redessin. */
+function ctrlMajPas(pos) {
+  if (!ombreSunAz || !ombreNSteps) return;
+
+var t = Math.round((ctrlHeure - ombreHeureStart) / 0.25);
+ombreStep = Math.max(0, Math.min(ombreNSteps - 1, t));
+
+  ombreSliderDirty = true;
+  ombreRendreFrame();
+}
+
+let passe2Timer = 0;
+/* ── declencherPasse2 ── E : aucune → T : anti-rebond de 150 ms puis
+   lancerPasse2Seule si les horizons sont prêts → S : aucune. */
+function declencherPasse2() {
+  clearTimeout(passe2Timer);
+  passe2Timer = setTimeout(function() {
+    if (ombreHorizonCopy) lancerPasse2Seule();
+  }, 150);
+}
+
+/* ── ctrlIncrementer ── E : curseur (0 année, 1 jour, 2 heure), sens ±1 →
+   T : année ±1 an (recalcule ombre, insolation, température si actives) ;
+   jour ±1 (heure bornée au jour, ombre) ; heure ±15 min bornée au jour →
+   S : panneau à jour. */
+function ctrlIncrementer(idx, sens) {
+  if (idx === 0) {
+    ctrlAnnee = Math.max(CTRL_ANNEE_MIN, Math.min(CTRL_ANNEE_MAX, ctrlAnnee + sens));
+    declencherPasse2();
+    if (typeof insolActive !== 'undefined' && insolActive) insolRecalcul();
+    if (typeof tempActive !== 'undefined' && tempActive) tempRecalcul();
+  } else if (idx === 1) {
+    ctrlJour = Math.max(0, Math.min(364, ctrlJour + sens));
+    insolDay = ctrlJour;
+    var rh1 = ctrlRiseSet();
+    if (rh1 && rh1.rise >= 0 && rh1.set >= 0)
+      ctrlHeure = Math.max(rh1.rise, Math.min(rh1.set, ctrlHeure));
+    insolHour = ctrlHeure;
+    declencherPasse2();
+  } else if (idx === 2) {
+    ctrlHeure += sens * 0.25;
+    var rh2 = ctrlRiseSet();
+    if (rh2 && rh2.rise >= 0 && rh2.set >= 0)
+      ctrlHeure = Math.max(rh2.rise, Math.min(rh2.set, ctrlHeure));
+    insolHour = ctrlHeure;
+  }
+  ctrlRendrePanneau();
+}
+/* Clavier : ↑↓ choisit le curseur actif, ←→ l'incrémente. */
+window.addEventListener('keydown', function(e) {
+  if (e.key === 'ArrowUp')    { e.preventDefault(); ctrlActif = Math.max(0, ctrlActif - 1); ctrlRendrePanneau(); }
+  if (e.key === 'ArrowDown')  { e.preventDefault(); ctrlActif = Math.min(2, ctrlActif + 1); ctrlRendrePanneau(); }
+  if (e.key === 'ArrowLeft')  { e.preventDefault(); ctrlIncrementer(ctrlActif, -1); }
+  if (e.key === 'ArrowRight') { e.preventDefault(); ctrlIncrementer(ctrlActif, +1); }
+});
+
+/* Boutons + / − : un clic incrémente, un appui maintenu répète en
+   accélérant. */
+(function() {
+  var pmTimer = 0, pmIdx = -1, pmSens = 0, pmCount = 0;
+
+  /* pmStop — E : aucune → T : arrête la répétition du bouton maintenu → S : aucune. */
+  function pmStop() {
+    clearTimeout(pmTimer); clearInterval(pmTimer);
+    pmTimer = 0; pmIdx = -1; pmSens = 0; pmCount = 0;
+  }
+
+  /* pmTick — E : bouton maintenu → T : incrémente, puis se reprogramme de
+     plus en plus vite (180 → 25 ms) → S : aucune. */
+  function pmTick() {
+    if (pmIdx < 0) return;
+    ctrlActif = pmIdx;
+    ctrlIncrementer(pmIdx, pmSens);
+    pmCount++;
+    var delay = pmCount < 5  ? 180 :
+                pmCount < 15 ?  90 :
+                pmCount < 30 ?  45 : 25;
+    pmTimer = setTimeout(pmTick, delay);
+  }
+
+  /* pmStart — E : curseur, sens → T : un incrément immédiat, répétition
+     après 380 ms → S : aucune. */
+  function pmStart(idx, sens) {
+    pmStop();
+    pmIdx = idx; pmSens = sens; pmCount = 0;
+    ctrlActif = idx;
+    ctrlIncrementer(idx, sens);
+    pmTimer = setTimeout(pmTick, 380);
+  }
+
+  for (var i = 0; i < 3; i++) {
+    (function(idx) {
+      var plus  = document.getElementById('ctrl-plus-'  + idx);
+      var minus = document.getElementById('ctrl-minus-' + idx);
+
+      plus.addEventListener('mousedown',  function(e){ e.preventDefault(); pmStart(idx, +1); });
+      minus.addEventListener('mousedown', function(e){ e.preventDefault(); pmStart(idx, -1); });
+    })(i);
+  }
+
+  window.addEventListener('mouseup',    pmStop);
+  window.addEventListener('mouseleave', pmStop);
+})();
+
+/* Jauges : clic ou glisser sur une barre fixe directement la valeur. */
+(function() {
+  var dragIdx = -1;
+
+  /* applyPct — E : curseur, fraction 0..1 de la jauge → T : année, jour ou
+     heure (entre lever et coucher) correspondants, recalculs associés →
+     S : panneau à jour. */
+  function applyPct(idx, pct) {
+    pct = Math.max(0, Math.min(1, pct));
+    if (idx === 0) {
+      ctrlAnnee = Math.round(CTRL_ANNEE_MIN + pct * (CTRL_ANNEE_MAX - CTRL_ANNEE_MIN));
+      declencherPasse2();
+      if (typeof insolActive !== 'undefined' && insolActive) insolRecalcul();
+      if (typeof tempActive  !== 'undefined' && tempActive)  tempRecalcul();
+    } else if (idx === 1) {
+      ctrlJour = Math.round(pct * 364);
+      insolDay = ctrlJour;
+      var rh3 = ctrlRiseSet();
+      if (rh3 && rh3.rise >= 0 && rh3.set >= 0)
+        ctrlHeure = Math.max(rh3.rise, Math.min(rh3.set, ctrlHeure));
+      insolHour = ctrlHeure;
+      declencherPasse2();
+    } else {
+      var rh4 = ctrlRiseSet();
+      if (rh4 && rh4.rise >= 0 && rh4.set >= 0) {
+        ctrlHeure = rh4.rise + pct * (rh4.set - rh4.rise);
+        ctrlHeure = Math.max(rh4.rise, Math.min(rh4.set, ctrlHeure));
+      }
+      insolHour = ctrlHeure;
+    }
+    ctrlRendrePanneau();
+  }
+
+  for (var i = 0; i < 3; i++) {
+    (function(idx) {
+      var bar = document.getElementById('ctrl-bar-' + idx);
+      bar.addEventListener('mousedown', function(e) {
+        e.preventDefault();
+        ctrlActif = idx;
+        dragIdx   = idx;
+        var r   = bar.getBoundingClientRect();
+        applyPct(idx, (e.clientX - r.left) / r.width);
+      });
+    })(i);
+  }
+
+  window.addEventListener('mousemove', function(e) {
+    if (dragIdx < 0) return;
+    var bar = document.getElementById('ctrl-bar-' + dragIdx);
+    var r   = bar.getBoundingClientRect();
+    applyPct(dragIdx, (e.clientX - r.left) / r.width);
+  });
+
+  window.addEventListener('mouseup', function() { dragIdx = -1; });
+})();
+
+/* ctrlOuvrir / ctrlFermer — E : aucune → T : affiche ou masque le panneau,
+   redimensionne la carte, redessine → S : aucune. */
+function ctrlOuvrir() {
+  document.getElementById('ctrl-panel').classList.add('visible');
+  ctrlRendrePanneau();
+  resizeWrap();
+  render();
+}
+/* ctrlFermer : voir ctrlOuvrir. */
+function ctrlFermer() {
+  document.getElementById('ctrl-panel').classList.remove('visible');
+  resizeWrap();
+  render();
+}
+
+const DISP  = 1024;
+const LEG_W = 80;
+
+let GEO = null, elevGrid = null;
+let ctrlPanneauOuvert = false;
+let oscHypso = null, oscContour = null, oscWater = null;
+let imgW = 0, imgH = 0, srcX = 0, srcY = 0, srcPPx = 1;
+let viewMode = 'hypso';
+let hypsoLUT = null, vminGlobal = 0, vmaxGlobal = 1000;
+
+/* ── toDMS ── E : degrés décimaux, latitude ? → T : degrés, minutes,
+   secondes (0,1″), hémisphère → S : texte « D°MM'SS.S"H ». */
+function toDMS(dd, isLat) {
+  const hem = isLat ? (dd>=0?'N':'S') : (dd>=0?'E':'W');
+  const abs = Math.abs(dd), d = Math.floor(abs);
+  const m   = Math.floor((abs-d)*60);
+  const s   = ((abs-d-m/60)*3600).toFixed(1);
+  return `${d}°${String(m).padStart(2,'0')}'${String(s).padStart(4,'0')}"${hem}`;
+}
+
+/* ── makeHypsoLUT ── E : aucune → T : 8 paliers vert → brun → gris →
+   blanc, 256 niveaux → S : hypsoLUT (légende).
+   ⚠ Copie de celle du Worker TIFF, à garder identique. */
+function makeHypsoLUT() {
+  const stops = [
+    [0.00,20,90,20],[0.12,80,160,50],[0.25,180,170,80],
+    [0.40,180,130,50],[0.58,140,85,30],[0.74,130,100,80],
+    [0.88,200,190,180],[1.00,255,255,255],
+  ];
+  const lut = new Uint8Array(256*3);
+  for(let i=0;i<256;i++){
+    const t=i/255; let s0=stops[0],s1=stops[1];
+    for(let k=0;k<stops.length-1;k++)
+      if(t>=stops[k][0]&&t<=stops[k+1][0]){s0=stops[k];s1=stops[k+1];break;}
+    const f=s1[0]===s0[0]?0:(t-s0[0])/(s1[0]-s0[0]);
+    lut[i*3]  =Math.round(s0[1]+f*(s1[1]-s0[1]));
+    lut[i*3+1]=Math.round(s0[2]+f*(s1[2]-s0[2]));
+    lut[i*3+2]=Math.round(s0[3]+f*(s1[3]-s0[3]));
+  }
+  hypsoLUT = lut;
+  return lut;
+}
+
+const canvas  = document.getElementById('c');
+const ctx     = canvas.getContext('2d');
+const coordEl = document.getElementById('coords');
+const swapBtn = document.getElementById('swap');
+const wrapEl  = document.getElementById('wrap');
+
+/* ── resizeWrap ── E : taille de la zone principale, panneau ouvert ? →
+   T : carré le plus grand possible à côté de la légende → S : taille de
+   #wrap et hauteur de la légende. */
+function resizeWrap() {
+  const main   = document.getElementById('main');
+  const ctrlEl = document.getElementById('ctrl-panel');
+
+  const ctrlW  = (ctrlEl && ctrlEl.classList.contains('visible')) ? 130 : 0;
+  const glW    = 0;
+
+  const avW    = main.offsetWidth - LEG_W - ctrlW - glW - 24;
+  const sz     = Math.min(avW, main.offsetHeight);
+  wrapEl.style.width  = sz + 'px';
+  wrapEl.style.height = sz + 'px';
+  const lcv = document.getElementById('lcv');
+  if(lcv) lcv.height = sz - 30;
+}
+
+resizeWrap();
+window.addEventListener('resize', () => { resizeWrap(); render(); drawLegend(); });
+
+/* currentOSC — E : viewMode → S : image hypsométrique ou courbes de niveau. */
+function currentOSC(){ return viewMode==='hypso' ? oscHypso : oscContour; }
+
+/* ── drawLegend ── E : hypsoLUT, vmin/vmax, niveau d'eau → T : barre
+   de couleur verticale, 5 graduations linéaires en m, trait du niveau
+   d'eau ; délègue à la légende d'insolation si active → S : dessin sur #lcv.
+   ⚠ Graduations linéaires alors que l'image est égalisée par histogramme :
+     les couleurs de la légende ne correspondent pas aux altitudes indiquées. */
+function drawLegend() {
+  if (typeof insolActive!=='undefined' && insolActive && insolImgData){
+    drawLegendInsol(); return;
+  }
+  const lcv = document.getElementById('lcv');
+  if(!lcv||!hypsoLUT||vmaxGlobal<=vminGlobal) return;
+  const legT=document.querySelector('#legend-panel .leg-title');
+  const legU=document.querySelector('#legend-panel .leg-unit');
+  if(legT) legT.textContent='ALTITUDE';
+  if(legU) legU.textContent='mètres';
+  const lh = lcv.height, lw = lcv.width;
+  if(lh < 10) return;
+  const lctx = lcv.getContext('2d');
+  lctx.clearRect(0,0,lw,lh);
+  const barX=0, barW=22, textX=barW+3, barH=lh-4, barY=2;
+  for(let y=0;y<barH;y++){
+    const t=1-y/barH, i=Math.round(t*255);
+    lctx.fillStyle=`rgb(${hypsoLUT[i*3]},${hypsoLUT[i*3+1]},${hypsoLUT[i*3+2]})`;
+    lctx.fillRect(barX, barY+y, barW, 1);
+  }
+  lctx.font='8px monospace';
+  for(const t of [0,.25,.5,.75,1.0]){
+    const elev = vminGlobal + t*(vmaxGlobal-vminGlobal);
+    const y    = barY + Math.round((1-t)*barH);
+    lctx.fillStyle='rgba(180,190,210,.6)'; lctx.fillRect(barX+barW,y,4,1);
+    lctx.fillStyle='#a6adc8'; lctx.fillText(`${Math.round(elev)}`,textX+4,y+3);
+  }
+  if(wet&&wet.size>0&&waterLevel>vminGlobal){
+    const t = Math.min(1,Math.max(0,(waterLevel-vminGlobal)/(vmaxGlobal-vminGlobal)));
+    const y = barY + Math.round((1-t)*barH);
+    lctx.strokeStyle='rgba(80,160,255,.9)'; lctx.lineWidth=1.5;
+    lctx.beginPath(); lctx.moveTo(barX,y); lctx.lineTo(barX+barW+8,y); lctx.stroke();
+    lctx.fillStyle='rgba(80,160,255,.9)';
+    lctx.fillText(`${Math.round(waterLevel)}`,textX+4,y-2);
+  }
+}
+
+/* ── render ── E : vue courante (srcX, srcY, srcPPx), calques actifs →
+   T : borne la vue, dessine le fond (hypso ou courbes), l'eau, les lignes
+   de partage, le filet ; ouvre le panneau au premier rendu ; recale la
+   couche d'étiquettes ; légende → S : dessin sur le canvas principal.
+   Surchargée ensuite par dsm-ombre.js, dsm-temp.js et le calque glacier. */
+function render() {
+  if (typeof insolActive!=='undefined' && insolActive && insolImgData){
+    insolRedessiner(); return;
+  }
+  const osc=currentOSC(); if(!osc) return;
+  if(!ctrlPanneauOuvert){ ctrlPanneauOuvert=true; ctrlOuvrir();
+    document.getElementById('btn-glacier').disabled=false; }
+  const sw=DISP*srcPPx, sh=DISP*srcPPx;
+  srcX=Math.max(0,Math.min(imgW-sw,srcX));
+  srcY=Math.max(0,Math.min(imgH-sh,srcY));
+  ctx.clearRect(0,0,DISP,DISP);
+  ctx.imageSmoothingEnabled=false;
+  const sX=Math.round(srcX), sY=Math.round(srcY), sW=Math.round(sw), sH=Math.round(sh);
+  ctx.drawImage(osc,sX,sY,sW,sH,0,0,DISP,DISP);
+  if(oscWater) ctx.drawImage(oscWater,sX,sY,sW,sH,0,0,DISP,DISP);
+
+  if (partageActif && partageOsc) {
+    const rx = 1024 / imgW, ry = 1024 / imgH;
+    ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(partageOsc, srcX*rx, srcY*ry, sw*rx, sh*ry, 0, 0, DISP, DISP);
+    ctx.imageSmoothingEnabled = false;
+  }
+
+  if (filActif && filOsc) {
+    const rx = 1024 / imgW, ry = 1024 / imgH;
+    ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(filOsc, srcX*rx, srcY*ry, sw*rx, sh*ry, 0, 0, DISP, DISP);
+    ctx.imageSmoothingEnabled = false;
+  }
+
+  syncCarto();
+  document.getElementById('vinfo').textContent=`zoom ×${(1/srcPPx).toFixed(2)}`;
+  drawLegend();
+}
+
+swapBtn.addEventListener('click',()=>{
+  if(!oscHypso||!oscContour) return;
+  viewMode=viewMode==='hypso'?'contour':'hypso';
+  swapBtn.textContent=viewMode==='hypso'?'⇄ Courbes de niveau':'⇄ Hypsométrie';
+  render();
+});
+
+let partageOsc = null, partageActif = false;
+const btnPartage = document.getElementById('btn-partage');
+
+btnPartage.addEventListener('click', () => {
+  if (typeof ombreElev1024 === 'undefined' || !ombreElev1024) {
+    document.getElementById('vstatus').textContent = 'Partage : calcule l\'ombre d\'abord';
+    return;
+  }
+
+  if (!partageOsc) {
+    const divide = DSMPARTAGE.tracer(ombreElev1024);
+
+    partageOsc = new OffscreenCanvas(1024, 1024);
+    const pctx = partageOsc.getContext('2d');
+    const pimg = pctx.createImageData(1024, 1024);
+    DSMPARTAGE.dessiner(pimg, divide);
+    pctx.putImageData(pimg, 0, 0);
+
+    if(typeof DSMMESH !== 'undefined') {
+      var _mesh = DSMMESH.construire(ombreElev1024, divide, dsmRes(), 1);
+      var _s    = DSMMESH.stats(_mesh);
+      console.log('[MESH] sommets:', _s.sommets,
+                  '| triangles bruts:', _s.triangles,
+                  '| sur crête:', _s.surCrete,
+                  '| patches coagulés:', _s.patches,
+                  '| fusion:', _s.fusion);
+      window.dsmMesh = _mesh;
+    }
+    window.dsmPartage = divide;
+  }
+
+  partageActif = !partageActif;
+  btnPartage.classList.toggle('active', partageActif);
+  render();
+});
+
+let fluxOsc = null, fluxActif = false, fluxLogUne = false;
+const btnFlux = document.getElementById('btn-flux');
+
+/* ── fluxDessiner ── E : filet (vit, vx, vy, centIdx) → T : garde la
+   facette la plus rapide par case de 16×16 px ; flèche de longueur et
+   couleur selon log(1 + v) / log(1 + vmax) → S : fluxOsc. ALGO : « Champ
+   de flèches d'écoulement, une par case, échelle logarithmique. » */
+function fluxDessiner() {
+  const F = window.dsmFilet;
+  if (!F || !F.vit) return;
+  if (!fluxOsc) fluxOsc = new OffscreenCanvas(1024, 1024);
+  const c = fluxOsc.getContext('2d');
+  c.clearRect(0, 0, 1024, 1024);
+  let vMax = 0;
+  for (let t = 0; t < F.nTri; t++) if (F.vit[t] > vMax) vMax = F.vit[t];
+  if (vMax <= 0) { if(fluxLogUne) console.log('[FLUX] vitesse max = 0 — glace trop mince'); fluxLogUne=false; return; }
+  if(fluxLogUne){ console.log('[FLUX] vitesse max = '+vMax.toFixed(3)+' m/an'); fluxLogUne=false; }
+  const best = new Int32Array(64 * 64).fill(-1);
+  for (let t = 0; t < F.nTri; t++) {
+    if (F.vit[t] < 0.01) continue;
+    const cx = (F.centIdx[t] % 1024) >> 4, cy = ((F.centIdx[t] / 1024) | 0) >> 4;
+    const k = cy * 64 + cx;
+    if (best[k] < 0 || F.vit[t] > F.vit[best[k]]) best[k] = t;
+  }
+  /* lv — E : vitesse → S : log(1 + v) / log(1 + vmax), dans [0, 1]. */
+  const lv = v => Math.log1p(v) / Math.log1p(vMax);
+  for (let k = 0; k < best.length; k++) {
+    const t = best[k]; if (t < 0) continue;
+    const f = lv(F.vit[t]);
+    const x0 = F.centIdx[t] % 1024, y0 = (F.centIdx[t] / 1024) | 0;
+    const L = 5 + 14 * f;
+    const dx = F.vx[t] / F.vit[t], dy = F.vy[t] / F.vit[t];
+    const x1 = x0 + dx * L, y1 = y0 + dy * L;
+    const r = Math.round(137 + f * 106), g = Math.round(180 - f * 41), b = Math.round(250 - f * 82);
+    c.strokeStyle = 'rgb(' + r + ',' + g + ',' + b + ')';
+    c.lineWidth = 1 + 1.5 * f;
+    c.beginPath(); c.moveTo(x0, y0); c.lineTo(x1, y1);
+    c.moveTo(x1, y1); c.lineTo(x1 - (dx - dy * 0.6) * L * 0.3, y1 - (dy + dx * 0.6) * L * 0.3);
+    c.moveTo(x1, y1); c.lineTo(x1 - (dx + dy * 0.6) * L * 0.3, y1 - (dy - dx * 0.6) * L * 0.3);
+    c.stroke();
+  }
+}
+
+btnFlux.addEventListener('click', () => {
+  if (!window.dsmFilet || !window.dsmFilet.vit) {
+    document.getElementById('vstatus').textContent = 'Flux : lance Glacier d\'abord';
+    return;
+  }
+  fluxLogUne = true;
+  fluxDessiner();
+  fluxActif = !fluxActif;
+  btnFlux.classList.toggle('active', fluxActif);
+  render();
+});
+
+let filOsc = null, filActif = false;
+const btnFil = document.getElementById('btn-fil');
+
+btnFil.addEventListener('click', () => {
+  if (typeof ombreElev1024 === 'undefined' || !ombreElev1024) {
+    document.getElementById('vstatus').textContent = 'Fil : calcule l\'ombre d\'abord';
+    return;
+  }
+  if (!window.dsmFilet) {
+    if (!window.dsmPartage) window.dsmPartage = DSMPARTAGE.tracer(ombreElev1024);
+    const orb0 = orbital(GLAC_EPOQUE_INIT), pibar0 = orb0.pib + Math.PI;
+    const lat0 = (GEO.latMax + GEO.latMin) / 2, lon0 = (GEO.lonMax + GEO.lonMin) / 2;
+    const rh0 = sunRiseSet(filetJourChaud(), orb0.e, orb0.eps, pibar0, lat0 * Math.PI / 180, lon0);
+    const r0 = rh0 ? rh0.rise : 6, s0 = rh0 ? rh0.set : 18;
+    window.dsmFilet = DSMFILET.construire(glacierElev1024(), window.dsmPartage, {
+      budget: FILET_BUDGET, scaleXY: dsmRes(),
+      estChaud: function (idx) {
+        return tempInstant(idx, -1, filetJourChaud(), GLAC_EPOQUE_INIT, r0, s0, false) > 0;
+      }
+    });
+    window.dsmFilet = DSMFILET.coalescer(window.dsmFilet);
+    const _fs = DSMFILET.stats(window.dsmFilet);
+    console.log('[FILET] triangles:', _fs.triangles, '| actifs (froids):', _fs.actifs,
+                '| mailles:', _fs.mailles, '| maille init:', _fs.mailleInit, '| σ moy:', _fs.sigmaMoy);
+  }
+  if (!filOsc) filDessiner();
+  filActif = !filActif;
+  btnFil.classList.toggle('active', filActif);
+  render();
+});
+
+/* ── filDessiner ── E : window.dsmFilet → T : pixels de frontière entre
+   facettes en orangé, facettes inactives voilées de rouge → S : filOsc. */
+function filDessiner() {
+  {
+    const F = window.dsmFilet, D = 1024, top = F.triOfPix;
+    filOsc = new OffscreenCanvas(D, D);
+    const fctx = filOsc.getContext('2d');
+    const img = fctx.createImageData(D, D), d = img.data;
+    for (let y = 0; y < D - 1; y++)
+      for (let x = 0; x < D - 1; x++) {
+        const i = y * D + x, ti = top[i];
+        if (ti < 0) continue;
+        const p = i << 2;
+        if (top[i] !== top[i + 1] || top[i] !== top[i + D]) {
+          d[p] = 250; d[p + 1] = 179; d[p + 2] = 135; d[p + 3] = 220;
+        } else if (!F.actif[ti]) {
+          d[p] = 120; d[p + 1] = 30; d[p + 2] = 30; d[p + 3] = 60;
+        }
+      }
+    fctx.putImageData(img, 0, 0);
+  }
+}
+
+const btnFil3d = document.getElementById('btn-fil3d');
+btnFil3d.addEventListener('click', () => {
+  if (!window.dsmFilet) {
+    document.getElementById('vstatus').textContent = '3D : affiche le Fil de fer d\'abord';
+    return;
+  }
+  DSMFIL3D.ouvrir(window.dsmFilet, glacierElev1024(), dsmRes());
+});
+
+/* ── dsmRes ── E : ombreResX, ombreResY → T : resX de la ligne centrale,
+   resY constant → S : { x, y } taille du pixel 1024² (m). */
+function dsmRes() {
+  var ry = ombreResY || 1;
+  var rx = (ombreResX && ombreResX.length) ? ombreResX[ombreResX.length >> 1] : ry;
+  return { x: rx, y: ry };
+}
+
+const GLAC_DIM      = 1024;
+const GLAC_N        = GLAC_DIM * GLAC_DIM;
+const GLAC_PAS_J    = 5;
+const GLAC_ANS      = 10;
+const GLAC_NSTEPS   = Math.round(GLAC_ANS * 365 / GLAC_PAS_J);
+const GLAC_EPOQUE_INIT = -30;
+const GLAC_EPOQUE_FIN  = (2026 - 1950) / 1000;
+const GLAC_CYCLE_ANS   = Math.ceil((GLAC_EPOQUE_FIN - GLAC_EPOQUE_INIT) * 1000);
+const GLAC_KA_PAR_AN   = 0.001;
+const GLAC_NSTEPS2     = GLAC_CYCLE_ANS * Math.round(365/GLAC_PAS_J);
+const GLAC_NSTEPS_TOT  = GLAC_NSTEPS + GLAC_NSTEPS2;
+const GLAC_FOEHN_RECALC_KA = 5;
+const FLUX_PENTE_MODE = 'A';
+const FLUX_E_GLEN     = 3;
+const FLUX_UB_PLAT    = 50;
+const FLUX_PENTE_REF  = 0.01;
+const FLUX_H_REF      = 200;
+const FLUX_C1 = (FLUX_UB_PLAT/(365*86400)) / (917*9.81*FLUX_H_REF*FLUX_PENTE_REF);
+const GLAC_NJOURS   = Math.floor(360 / GLAC_PAS_J) + 1;
+const FLUX_RECAL_ANS = 100;
+
+/* ── Glissement basal (dsm-basal.js) ──────────────────────────────────
+   BASAL_ACTIF = false rend la boucle strictement identique à la v3.84 :
+   ni etat ni tableaux alloués, DSMFLUX.config.c1Tab reste nul et le
+   glissement demeure uniforme. */
+const BASAL_ACTIF = true;
+let basalEtat = null, basalC1 = null, basalGliss = null;
+let basalPente = null, basalTSurf = null, basalH = null;
+const GLAC_PRECIP   = 1500;
+const GLAC_PRECIP_CC = 0.045;
+const GLAC_DENS_NEIGE = 0.1;
+const GLAC_DENS_GLACE = 0.917;
+const GLAC_TAU_TASS   = 10.0;
+const GLAC_K_TASS     = GLAC_PAS_J/365/GLAC_TAU_TASS;
+const GLAC_DDF_NEIGE  = 0.00017;
+const GLAC_DDF_GLACE  = 0.00033;
+
+const FILET_DELAI_S = 60;
+const FILET_TRI_S   = 500;
+const FILET_WORKERS = (navigator.hardwareConcurrency || 4);
+const FILET_BUDGET  = Math.min(131072, FILET_WORKERS * FILET_TRI_S * FILET_DELAI_S);
+/* filetJourChaud — E : aucune → S : jour d'été de la tuile (tempJourEte),
+   utilisé pour marquer les facettes trop chaudes pour accumuler. */
+function filetJourChaud() { return tempJourEte(); }
+
+let glacierFilet  = null;
+let filetNeige    = null;
+let filetGlace    = null;
+
+let glacierOsc    = null;
+let glacierFoehnC = null;
+let glacierFoehnDT = null;
+let glacierInsolCards = null;
+let glacierInsolMax = 0;
+let glacierRunning = false;
+let glacierRunId   = 0;
+
+/* ── glacierActif ── E : jeton de run → S : vrai si la simulation tourne
+   et que ce jeton est le courant. ALGO : « Une chaîne asynchrone d'un run
+   arrêté ou remplacé s'éteint d'elle-même. » */
+function glacierActif(run) { return glacierRunning && run === glacierRunId; }
+
+/* ── Chien de garde : repère l'étape en cours, signale tout blocage ──
+   glacierMarquer(nom) date chaque étape du pas. Si aucune étape n'avance
+   pendant GLAC_WATCHDOG_S secondes, la console et la barre d'état
+   indiquent l'étape bloquée, le pas, et le dernier signe de vie du
+   Worker d'écoulement (Picard, balayages, segments, profondeur).      */
+const GLAC_WATCHDOG_S = 15;
+var _glacMarque = null, _glacWatchdog = 0;
+/* ── glacierMarquer ── E : nom d'étape → T : date l'étape et le pas → S :
+   _glacMarque (lu par le chien de garde). */
+function glacierMarquer(nom) {
+  _glacMarque = { nom: nom, t: performance.now(), pas: glacierStep };
+}
+/* ── glacierWatchdog ── E : jeton de run → T : toutes les 5 s, si l'étape
+   courante dure plus de 15 s, message console et barre d'état : étape, pas,
+   année, phase ; pour l'écoulement, état du Worker (calcule / muet / sans
+   signe de vie) et progression du solveur → S : aucune. */
+function glacierWatchdog(run) {
+  clearInterval(_glacWatchdog);
+  _glacWatchdog = setInterval(function () {
+    if (run !== glacierRunId || !glacierRunning) { clearInterval(_glacWatchdog); return; }
+    if (!_glacMarque) return;
+    var age = (performance.now() - _glacMarque.t) / 1000;
+    if (age < GLAC_WATCHDOG_S) return;
+    var pf = (typeof FLUXWORKER !== 'undefined') ? FLUXWORKER.progres : null;
+    var vie = '';
+    if (_glacMarque.nom === 'FLUXWORKER.pas') {
+      if (pf && pf.appel === FLUXWORKER.appel) {
+        var agePf = (performance.now() - pf.recu) / 1000;
+        vie = ' | Worker flux bassin ' + (['N','E','S','O'][pf.bassin] || '?') + ' ' +
+              (agePf < 3 ? 'CALCULE' : 'MUET depuis ' + agePf.toFixed(0) + ' s') +
+              ' : ' + pf.etape + ' seg ' + pf.seg + ' prof ' + pf.prof + ' picard ' + pf.picard +
+              ' cg ' + pf.cg + ' gs ' + pf.gs + '/' + pf.budget + ' actifs ' + pf.nAC + ' dMax ' + pf.dMax.toExponential(2) +
+              ' dt ' + (pf.dt / 86400).toFixed(3) + ' j';
+      } else vie = ' | Worker flux : aucun signe de vie pour ce pas';
+    }
+    var msg = '\u26a0 BLOQUÉ ' + age.toFixed(0) + ' s dans « ' + _glacMarque.nom + ' » — pas ' +
+              _glacMarque.pas + ' (année ' + Math.floor(_glacMarque.pas / GLAC_NJOURS) +
+              ', phase ' + (_glacMarque.pas % GLAC_NJOURS) + ')' + vie;
+    console.warn('[WATCHDOG] ' + msg);
+    document.getElementById('vstatus').textContent = msg;
+  }, 5000);
+}
+
+/* ── glacierErreur ── E : jeton de run, nom d'étape → S : fonction qui,
+   si le run est courant, l'arrête, journalise l'erreur, l'affiche et remet
+   le bouton Glacier. */
+function glacierErreur(run, etape) {
+  return function(err) {
+    if (run !== glacierRunId) return;
+    glacierRunning = false;
+    var msg = (err && err.message) ? err.message : String(err);
+    console.error('[GLACIER] STOP ' + etape + ' :', err);
+    document.getElementById('vstatus').textContent = '\u2744\ufe0f Erreur ' + etape + ' : ' + msg;
+    var b = document.getElementById('btn-glacier');
+    b.textContent = '\u2744\ufe0f Glacier'; b.classList.remove('active');
+  };
+}
+let glacierStep    = 0;
+
+/* ── glacierElev1024 ── E : ombreElev1024 ou elevGrid → T : grille 1024²
+   existante, sinon rééchantillonnage bilinéaire → S : Float32Array 1024².
+   ⚠ Le repli n'aligne pas les coins comme lancerOmbre (pas imgW/1024 au
+     lieu de (imgW − 1)/1023). */
+function glacierElev1024() {
+  if (ombreElev1024) return ombreElev1024;
+  var W=GLAC_DIM, H=GLAC_DIM, out=new Float32Array(GLAC_N);
+  var sx=imgW/W, sy=imgH/H;
+  for(var rr=0;rr<H;rr++){
+    var fy=rr*sy, iy=Math.min(Math.floor(fy),imgH-2), ty=fy-iy;
+    for(var cc=0;cc<W;cc++){
+      var fx=cc*sx, ix=Math.min(Math.floor(fx),imgW-2), tx=fx-ix;
+      out[rr*W+cc]=
+        elevGrid[ iy   *imgW+ix  ]*(1-tx)*(1-ty)+
+        elevGrid[ iy   *imgW+ix+1]*   tx *(1-ty)+
+        elevGrid[(iy+1)*imgW+ix  ]*(1-tx)*   ty +
+        elevGrid[(iy+1)*imgW+ix+1]*   tx *   ty;
+    }
+  }
+  return out;
+}
+
+/* ── glacierCalcFoehn ── E : t_ka ; horizons calculés → T : température
+   annuelle par pixel, DsmFoehn.foehnCalc → S : Promise(facteur de
+   précipitation par pixel) ; ΔT de foehn dans glacierFoehnDT. */
+function glacierCalcFoehn(t_ka) {
+  if(!ombreHorizonCopy)
+    return Promise.reject(new Error('Foehn impossible : horizon non calculé — lancer l\'étape Ombre avant Glacier.'));
+  var lat = (GEO.latMax + GEO.latMin) / 2;
+  var tempFn = function(idx) {
+    return TEMP_T0_MER + anomaliePaleo(t_ka, lat) - TEMP_LAPSE * ombreElev1024[idx] / 1000;
+  };
+  return DsmFoehn.foehnCalc(t_ka, ombreElev1024, dsmRes(), lat, tempFn).then(function(out){
+    glacierFoehnDT = out.foehnDT;
+    return out.foehnC;
+  });
+}
+
+/* ── glacierDessiner ────────────────────────────────────────────────────
+   ENTRÉE     : filet, filetNeige, filetGlace, _glacExtMax, _glacCamion
+   TRAITEMENT : déciles de l'épaisseur totale (neige + glace) ; pixel bleu
+                si la glace domine, cyan si la neige domine, teinte et
+                opacité selon le décile ; contour de l'extension maximale :
+                vert si la facette est un front épais (> 10 m), rouge sinon
+   SORTIE     : glacierOsc ; render()
+   ALGO       : « Carte neige / glace en déciles d'épaisseur, contour de
+                l'extension maximale coloré selon l'état du front. »
+   ─────────────────────────────────────────────────────────────────── */
+function glacierDessiner(elev1024) {
+  if(!glacierOsc) glacierOsc=new OffscreenCanvas(GLAC_DIM,GLAC_DIM);
+  var ctx2=glacierOsc.getContext('2d');
+  var imgd=ctx2.createImageData(GLAC_DIM,GLAC_DIM);
+  var d=imgd.data;
+  var F=glacierFilet, top=F.triOfPix;
+
+  var vals=[];
+  /* Triangles inactifs (trop chauds pour accumuler) inclus dès qu'ils
+     portent de la neige ou de la glace : c'est là qu'arrive la glace
+     qui descend dans les vallées. */
+  for(var t=0;t<F.nTri;t++){
+    var tot=filetNeige[t]/GLAC_DENS_NEIGE+filetGlace[t]/GLAC_DENS_GLACE;
+    if(tot>0.01) vals.push(tot);
+  }
+  vals.sort(function(a,b){return a-b;});
+  var nv=vals.length;
+  var deciles=new Float32Array(11);
+  for(var d2=0;d2<=10;d2++) deciles[d2]=nv>0?vals[Math.min(nv-1,Math.round(d2/10*(nv-1)))]:0;
+
+  for(var i=0;i<GLAC_N;i++){
+    var ti=top[i];
+    if(ti<0) continue;
+    var neige=filetNeige[ti]/GLAC_DENS_NEIGE, glace=filetGlace[ti]/GLAC_DENS_GLACE, total=neige+glace;
+    if(total<0.01) continue;
+    var dec=0;
+    for(var k=1;k<=10;k++) if(total>=deciles[k]) dec=k;
+    var tt=dec/10;
+    var p=i<<2;
+    if(filetGlace[ti]>filetNeige[ti]){
+      d[p]  =0;
+      d[p+1]=Math.round(20+tt*100);
+      d[p+2]=Math.round(120+tt*135);
+    } else {
+      d[p]  =Math.round(100-tt*100);
+      d[p+1]=Math.round(200+tt*55);
+      d[p+2]=255;
+    }
+    d[p+3]=Math.round(150+tt*105);
+  }
+  ctx2.putImageData(imgd,0,0);
+  if(window._glacExtMax){
+    var ext=window._glacExtMax, W=GLAC_DIM, camion=window._glacCamion;
+    var m=new Uint8Array(W*W);
+    for(var i2=0;i2<W*W;i2++){ var ti2=top[i2]; if(ti2>=0&&ext[ti2]) m[i2]=1; }
+    for(var y2=1;y2<W-1;y2++)
+      for(var x2=1;x2<W-1;x2++){
+        var i3=y2*W+x2;
+        if(!m[i3]) continue;
+        if(!m[i3-1]||!m[i3+1]||!m[i3-W]||!m[i3+W]){
+          var tri3=top[i3];
+          ctx2.fillStyle=(camion && tri3>=0 && camion[tri3])?'#00c000':'#ff0000';
+          ctx2.fillRect(x2,y2,1,1);
+        }
+      }
+  }
+  render();
+}
+
+/* ── glacierStats ── E : filet, épaisseurs → T : surface couverte (facettes
+   actives ou englacées), épaisseurs moyennes de neige et de glace, glace
+   maximale, extensions actuelle (> 1 m éq. eau) et maximale → S : objet
+   de statistiques. */
+function glacierStats() {
+  var F=glacierFilet, sCov=0, sTot=0, sN=0, sG=0, mxG=0;
+  for(var t=0;t<F.nTri;t++){
+    if(!F.actif[t] && filetNeige[t]+filetGlace[t] <= 0.01) continue;
+    var a=F.surf[t]; sTot+=a;
+    var w=filetNeige[t]+filetGlace[t];
+    if(w>0.01){ sCov+=a; sN+=filetNeige[t]*a; sG+=filetGlace[t]*a; if(filetGlace[t]>mxG) mxG=filetGlace[t]; }
+  }
+  var kmCur=0, kmMax=0;
+  for(var t2=0;t2<F.nTri;t2++){
+    if(filetGlace[t2]>1) kmCur+=F.surf[t2];
+    if(window._glacExtMax && window._glacExtMax[t2]) kmMax+=F.surf[t2];
+  }
+  return { pcCov:(sTot?100*sCov/sTot:0).toFixed(1),
+           mN: sCov?(sN/sCov/GLAC_DENS_NEIGE):0,
+           mG: sCov?(sG/sCov/GLAC_DENS_GLACE):0,
+           mxG: mxG/GLAC_DENS_GLACE,
+           kmCur: kmCur/1e6, kmMax: kmMax/1e6 };
+}
+
+/* ── bilanELA (console) ── E : cumuls par tranche de 100 m (_elaPos,
+   _elaNeg, _elaAire) → T : tableau accumulation / fonte / bilan net par
+   tranche, ELA au passage à zéro → S : journal console.
+   ⚠ Cible « ELA 1000–1400 m » codée en dur (valeur LGM alpine), sans
+     rapport avec la tuile chargée. */
+window.bilanELA = function () {
+  if (!window._elaPos) { console.log('bilanELA : lancer Glacier d\'abord'); return; }
+  var anB = Math.floor(glacierStep * GLAC_PAS_J / 365);
+  console.log('[ELA] bilan de masse — année simulée ' + anB +
+              ' (cible LGM : ELA 1000–1400 m)');
+  console.log('  tranche      | accum. | fonte  | net (m w.e./an)');
+  var zN = [], bN = [];
+  for (var b = 59; b >= 0; b--) {
+    var A = window._elaAire[b]; if (A <= 0) continue;
+    var acc = window._elaPos[b] / A, abl = window._elaNeg[b] / A;
+    var net = acc - abl;
+    zN.push(b * 100 + 50); bN.push(net);
+    console.log('  ' + (b * 100) + '\u2013' + (b * 100 + 100) + ' m | ' +
+      acc.toFixed(2).padStart(6) + ' | ' + abl.toFixed(2).padStart(6) + ' | ' +
+      (net >= 0 ? '+' : '') + net.toFixed(2));
+  }
+  var ela = null;
+  for (var i = 0; i < zN.length - 1; i++)
+    if (bN[i] > 0 && bN[i + 1] <= 0) {
+      ela = zN[i + 1] + 100 * bN[i + 1] / (bN[i + 1] - bN[i]); break;
+    }
+  if (ela !== null) console.log('[ELA] modèle \u2248 ' + Math.round(ela) +
+    ' m — écart cible : ' + Math.round(ela - 1400) + ' m au-dessus de 1400 m');
+  else if (bN.length && bN[0] <= 0) console.log('[ELA] modèle : bilan négatif ' +
+    'jusqu\'aux sommets — ELA au-dessus du relief');
+  else console.log('[ELA] modèle : pas de passage à zéro (bilan positif partout ?)');
+};
+
+/* ── glacierTablesWsun ── E : 73 cartes d'ensoleillement 1024² → T :
+   échantillonne chaque carte au pixel central de chaque facette → S :
+   Uint8Array 73 × nTri. */
+function glacierTablesWsun(){
+  var F=glacierFilet, n=F.nTri, w=new Uint8Array(GLAC_NJOURS*n);
+  for(var sl=0; sl<GLAC_NJOURS; sl++){
+    var c=glacierInsolCards[sl], o=sl*n;
+    for(var t=0;t<n;t++) w[o+t]=c[F.centIdx[t]];
+  }
+  return w;
+}
+/* ── glacierPoolInit ── E : filet, foehn, ensoleillement → T : tables par
+   facette (altitude du pixel central, fC, ΔT, cosT, actif) et constantes
+   (gradient, amplitude diurne, pas, degrés-jours, tassement) →
+   S : Promise(GLACPOOL.init).
+   ⚠ Altitude = pixel central, alors que basal et flux utilisent centZ
+     (altitude moyenne de la facette). */
+function glacierPoolInit(){
+  var F=glacierFilet, n=F.nTri;
+  var z=new Float32Array(n), fC=new Float32Array(n), fDT=new Float32Array(n);
+  for(var t=0;t<n;t++){ var ic=F.centIdx[t];
+    z[t]=ombreElev1024[ic]; fC[t]=glacierFoehnC[ic]; fDT[t]=glacierFoehnDT[ic]; }
+  return GLACPOOL.init(n, { z:z, fDT:fDT, fC:fC, cosT:F.cosT, actif:F.actif,
+    wSun73:glacierTablesWsun(),
+    K:{ lapse:TEMP_LAPSE, aDiurne:TEMP_A_DIURNE, pasJ:GLAC_PAS_J,
+        ddfN:GLAC_DDF_NEIGE, ddfG:GLAC_DDF_GLACE, kTass:GLAC_K_TASS } });
+}
+/* glacierPoolFoehn — E : glacierFoehnC/DT → T : échantillonne par facette,
+   GLACPOOL.majFoehn → S : Promise. */
+function glacierPoolFoehn(){
+  var F=glacierFilet, n=F.nTri, fC=new Float32Array(n), fDT=new Float32Array(n);
+  for(var t=0;t<n;t++){ var ic=F.centIdx[t]; fC[t]=glacierFoehnC[ic]; fDT[t]=glacierFoehnDT[ic]; }
+  return GLACPOOL.majFoehn(fC, fDT);
+}
+
+/* ── basalInit ── E : filet, T0, anomalie initiale → T : pentes du lit,
+   tableaux basaux, lit initial à la température de l'air, branche c1Tab et
+   glissTab sur DSMFLUX.config ; BASAL_ACTIF faux → glissement uniforme →
+   S : aucune. */
+function basalInit(){
+  if(!BASAL_ACTIF || typeof BASAL === 'undefined'){
+    basalEtat = null;
+    DSMFLUX.config.c1Tab = null;
+    DSMFLUX.config.glissTab = null;
+    return;
+  }
+  var F = glacierFilet, n = F.nTri;
+  basalPente = BASAL.pentesDepuisMaillage(F);
+  basalTSurf = new Float32Array(n);
+  basalH     = new Float32Array(n);
+  basalC1    = new Float32Array(n);
+  basalGliss = new Float32Array(n);
+  var lapse = TEMP_LAPSE / 1000;
+  var tMer0 = TEMP_T0_MER + anomaliePaleo(GLAC_EPOQUE_INIT,(GEO.latMax+GEO.latMin)/2);
+  for(var t=0;t<n;t++){
+    var z = F.centZ[t];
+    basalTSurf[t] = z <= 0.5 ? tMer0 : tMer0 - lapse * z;
+  }
+  basalEtat = BASAL.etatNeuf(n, basalTSurf);
+  DSMFLUX.config.c1Tab = basalC1;
+  DSMFLUX.config.glissTab = basalGliss;
+  console.log('[BASAL] actif —', n, 'triangles | lit initialisé à la température de l\'air');
+}
+
+/* ── basalPenteSurface ── E : adjacence, épaisseurs H, sortie (préremplie
+   avec la pente du lit) → T : moyenne quadratique, pondérée par la
+   longueur d'arête, de la pente de surface (lit + H) le long des arêtes
+   englacées → S : pente de surface par facette. */
+function basalPenteSurface(adj, H, out){
+  var n = out.length, acc = new Float64Array(n), wl = new Float64Array(n);
+  for(var e=0;e<adj.n;e++){
+    var a = adj.a[e], b = adj.b[e];
+    if(H[a] <= 0 && H[b] <= 0) continue;
+    var s = adj.cs[e] + (H[a] - H[b]) / adj.dist[e], L = adj.len[e];
+    acc[a] += L*s*s; wl[a] += L;
+    acc[b] += L*s*s; wl[b] += L;
+  }
+  for(var t=0;t<n;t++) if(wl[t] > 0) out[t] = Math.sqrt(acc[t]/wl[t]);
+}
+
+/* ── basalPas ── E : T_mer du pas → T : température de surface annuelle
+   par facette (gradient + ΔT foehn), épaisseur de glace, pente de surface
+   si l'adjacence existe, BASAL.basalPas sur un pas de 5 jours → S : sonde
+   basale ; c1Tab et glissTab mis à jour. */
+function basalPas(tMer){
+  if(!basalEtat) return null;
+  var F = glacierFilet, n = F.nTri;
+  var lapse = TEMP_LAPSE / 1000;
+  var fDT = glacierFoehnDT;
+  for(var t=0;t<n;t++){
+    var z = F.centZ[t];
+    basalTSurf[t] = (z <= 0.5 ? tMer : tMer - lapse * z)
+                  + (fDT ? fDT[F.centIdx[t]] : 0);
+    basalH[t] = filetGlace[t] / GLAC_DENS_GLACE;
+  }
+  var pente = basalPente;
+  if(window._glacAdj){
+    if(!basalPas._pS || basalPas._pS.length !== n) basalPas._pS = new Float32Array(n);
+    basalPas._pS.set(basalPente);
+    basalPenteSurface(window._glacAdj, basalH, basalPas._pS);
+    pente = basalPas._pS;
+  }
+  return BASAL.basalPas({ H: basalH, tSurf: basalTSurf, pente: pente },
+                        basalEtat, basalC1, basalGliss,
+                        GLAC_PAS_J / 365, 0, n);
+}
+
+/* ── glacierLoop ─────────────────────────────────────────────────────────
+   ENTRÉE     : grille 1024², jeton de run ; état global du glacier
+   TRAITEMENT : fin → statistiques et dernier dessin ; sinon jour et
+                époque du pas (10 ans figés à −30 ka puis 1 an = 1/1000 ka) ;
+                au changement de ka, recalcul de l'insolation ; tous les
+                5 ka, recalcul du foehn ; puis GLACPOOL.pas (bilan de masse),
+                basalPas, FLUXWORKER.pas (écoulement ; recalage imposé en
+                année 0 de chaque siècle), extension maximale, statistiques
+                et journal, dessin annuel ; pas suivant
+   SORTIE     : aucune (chaîne asynchrone jusqu'à la fin ou l'arrêt)
+   ALGO       : « Boucle de simulation : bilan de masse, glissement,
+                écoulement, avec recalculs périodiques du forçage. »
+   ─────────────────────────────────────────────────────────────────── */
+function glacierLoop(elev1024, run) {
+  if(!glacierActif(run)) return;
+  glacierMarquer('début de pas');
+  if(glacierStep>=GLAC_NSTEPS_TOT){
+    glacierRunning=false;
+    var st=glacierStats();
+    var _dt=((performance.now()-window._glacT0)/1000).toFixed(1);
+    var msg='❄️ TERMINÉ '+GLAC_NSTEPS_TOT+' pas (10 ans LGM + '+GLAC_CYCLE_ANS+' cycles → 2026) en '+_dt+' s ('+
+            (window._glacTAccum/GLAC_NSTEPS_TOT).toFixed(0)+' ms/pas calcul) | couvert '+st.pcCov+'% | moy neige '
+            +st.mN.toFixed(1)+'m | moy glace '+st.mG.toFixed(2)+'m | max glace '+st.mxG.toFixed(1)+'m | ext '+st.kmCur.toFixed(1)+'/'+st.kmMax.toFixed(1)+' km²';
+    document.getElementById('vstatus').textContent=msg;
+    document.getElementById('btn-glacier').textContent='❄️ Glacier';
+    document.getElementById('btn-glacier').classList.remove('active');
+    console.log('[GLACIER] FIN BOUCLE —',msg);
+    glacierDessiner(elev1024); if(fluxActif) fluxDessiner();
+    return;
+  }
+  var jour=((glacierStep*GLAC_PAS_J)%365)+1;
+  var t_ka;
+  if(glacierStep < GLAC_NSTEPS) t_ka = GLAC_EPOQUE_INIT;
+  else t_ka = GLAC_EPOQUE_INIT + ((glacierStep-GLAC_NSTEPS)/GLAC_NJOURS)*GLAC_KA_PAR_AN;
+  if(glacierStep % GLAC_NJOURS === 0) deltaCmarqueur(t_ka);
+  if(glacierStep >= GLAC_NSTEPS){
+    var _insBin = Math.floor(t_ka - GLAC_EPOQUE_INIT);
+    if(window._glacInsBin === undefined) window._glacInsBin = 0;
+    if(_insBin !== window._glacInsBin){
+      window._glacInsBin = _insBin;
+      console.log('[GLACIER] recalcul insolation (précession) à t_ka='+t_ka.toFixed(2));
+      var _st=glacierStep;
+      glacierMarquer('recalcul insolation');
+      glacierPrechargeInsol(t_ka, run, true)
+        .then(function(){ return GLACPOOL.majSoleil(glacierTablesWsun()); })
+        .then(function(){
+          if(glacierActif(run)) requestAnimationFrame(function(){ glacierLoop(elev1024, run); });
+        }).catch(glacierErreur(run, 'insolation'));
+      glacierStep=_st;
+      return;
+    }
+  }
+  if(glacierStep >= GLAC_NSTEPS){
+    var _kaBin = Math.floor((t_ka - GLAC_EPOQUE_INIT) / GLAC_FOEHN_RECALC_KA);
+    if(window._glacFoehnBin === undefined) window._glacFoehnBin = 0;
+    if(_kaBin !== window._glacFoehnBin){
+      window._glacFoehnBin = _kaBin;
+      console.log('[GLACIER] recalcul foehn à t_ka='+t_ka.toFixed(1));
+      var _stF=glacierStep;
+      glacierMarquer('recalcul foehn');
+      glacierCalcFoehn(t_ka).then(function(foehnC){
+        if(!glacierActif(run)) return;
+        glacierFoehnC = foehnC;
+        glacierStep=_stF;
+        return glacierPoolFoehn();
+      }).then(function(){
+        if(glacierActif(run)) requestAnimationFrame(function(){ glacierLoop(elev1024, run); });
+      }).catch(glacierErreur(run, 'foehn'));
+      return;
+    }
+  }
+  if(glacierStep===0){
+    window._glacT0=performance.now(); window._glacTAccum=0; window._glacTFlux=0; window._glacStepBase=0;
+    console.log('[GLACIER] DÉBUT — climat figé t_ka='+t_ka+' | '+GLAC_NSTEPS+' pas de '+GLAC_PAS_J+'j ('+GLAC_ANS+' ans)');
+  }
+
+  var _tp=performance.now();
+  var orbP=orbital(t_ka), pibarP=orbP.pib+Math.PI;
+  var latP=(GEO.latMax+GEO.latMin)/2, lonP=(GEO.lonMax+GEO.lonMin)/2;
+  var rhP=sunRiseSet(jour, orbP.e, orbP.eps, pibarP, latP*Math.PI/180, lonP);
+  var riseP=rhP&&rhP.rise>=0?rhP.rise:12, setP=rhP&&rhP.rise>=0?rhP.set:12;
+  var scal={ tMer:TEMP_T0_MER+anomaliePaleo(t_ka,latP), bNeb:nebJour(jour),
+             tSaison:tempSaison(jour),
+             L:Math.max(0,setP-riseP),
+             precJour:(GLAC_PRECIP/1000)*GLAC_PAS_J/365*Math.exp(GLAC_PRECIP_CC*anomaliePaleo(t_ka,latP)),
+             slice:Math.min(GLAC_NJOURS-1,Math.floor((jour-1)/GLAC_PAS_J)) };
+  if (!window._elaAvant) {
+    var _nT0 = glacierFilet.nTri;
+    window._elaAvant = new Float32Array(_nT0);
+    window._elaBand  = new Int16Array(_nT0);
+    window._elaAire  = new Float64Array(60);
+    for (var _e0 = 0; _e0 < _nT0; _e0++) {
+      var _b0 = Math.max(0, Math.min(59, glacierFilet.centZ[_e0] / 100 | 0));
+      window._elaBand[_e0] = _b0;
+      window._elaAire[_b0] += glacierFilet.surf[_e0];
+    }
+    window._elaPos = new Float64Array(60);
+    window._elaNeg = new Float64Array(60);
+  }
+  for (var _e1 = 0; _e1 < glacierFilet.nTri; _e1++)
+    window._elaAvant[_e1] = filetNeige[_e1] + filetGlace[_e1];
+glacierMarquer('GLACPOOL.pas');
+GLACPOOL.pas(scal, filetNeige, filetGlace).then(function(){
+  if(!glacierActif(run)) return;
+  glacierMarquer('basal');
+  for (var _e2 = 0; _e2 < glacierFilet.nTri; _e2++) {
+    var _d = filetNeige[_e2] + filetGlace[_e2] - window._elaAvant[_e2];
+    if (_d > 0) window._elaPos[window._elaBand[_e2]] += _d * glacierFilet.surf[_e2];
+    else if (_d < 0) window._elaNeg[window._elaBand[_e2]] -= _d * glacierFilet.surf[_e2];
+  }
+  if (glacierStep % GLAC_NJOURS === GLAC_NJOURS - 1) {
+    var _anB = Math.floor(glacierStep * GLAC_PAS_J / 365);
+    if (_anB < 10 || _anB % 50 === 0) window.bilanELA();
+    window._elaPos.fill(0); window._elaNeg.fill(0);
+  }
+  var _sB = basalPas(scal.tMer);
+  if (_sB && glacierStep % (GLAC_NJOURS * 100) === 0)
+    console.log('[BASAL] pas '+glacierStep+' | gelés '+_sB.nGele+' | tempérés '+_sB.nTempere+
+                ' | surges '+_sB.nSurge+' | pergélisol '+_sB.nPergel+
+                ' | stock max '+_sB.stockMax.toFixed(2)+' m | u_b max '+
+                Math.round(_sB.uSurgeMax)+' m/an | T lit moy '+_sB.tBasMoy.toFixed(2)+' °C');
+
+  var _fluxPrep = window._glacAdj ? Promise.resolve() : (function(){
+
+window._glacAdj = DSMFLUX.adjacence(glacierFilet, dsmRes(), FLUX_PENTE_MODE);
+
+  /* Un Worker d'écoulement par bassin versant (lignes de partage) */
+  var _bassins = (typeof DSMPARTAGE !== 'undefined' && ombreElev1024)
+    ? DSMPARTAGE.bassins(ombreElev1024) : null;
+  return FLUXWORKER.init(glacierFilet, window._glacAdj, { E: FLUX_E_GLEN, c1: FLUX_C1 }, _bassins);
+  })();
+  var _disp = true;
+  var _phase = glacierStep % GLAC_NJOURS;
+  var _recale = (Math.floor(glacierStep / GLAC_NJOURS) % FLUX_RECAL_ANS) === 0;
+  var _vAv=0; if(_disp) for(var _q=0;_q<glacierFilet.nTri;_q++) _vAv+=filetGlace[_q]*glacierFilet.surf[_q];
+  var _tf=performance.now();
+  glacierMarquer('FLUXWORKER.pas');
+  return _fluxPrep.then(function(){ return FLUXWORKER.pas(glacierFilet, filetGlace, GLAC_PAS_J, _disp, _phase, _recale); }).then(function(_ng){
+  if(!glacierActif(run)) return;
+  filetGlace=_ng;
+  glacierMarquer('après flux (stats, dessin)');
+  window._glacCamion = DSMFLUX.sonde ? DSMFLUX.sonde.camion : null;
+  window._glacTFlux=(window._glacTFlux||0)+(performance.now()-_tf);
+  if(_disp){
+    var _vAp=0,_dep=0;
+    for(var _q2=0;_q2<glacierFilet.nTri;_q2++){ _vAp+=filetGlace[_q2]*glacierFilet.surf[_q2];
+      _dep+=Math.abs(glacierFilet.vit[_q2])>0?1:0; }
+    window._glacVolDep=(window._glacVolDep||0); window._glacVolErr=_vAp-_vAv; window._glacNbFlux=_dep;
+  }
+  if(!window._glacExtMax) window._glacExtMax = new Uint8Array(glacierFilet.nTri);
+  for(var _t=0;_t<glacierFilet.nTri;_t++) if(filetGlace[_t]>1) window._glacExtMax[_t]=1;
+
+  window._glacTAccum+=performance.now()-_tp;
+
+  {
+    var _annee = glacierStep%GLAC_NJOURS===0;
+    var st=glacierStats();
+    var _now=performance.now();
+    var _dtPas=(window._glacTLastLog!==undefined) ? (_now-window._glacTLastLog) : 0;
+    window._glacTLastLog=_now;
+    var _nP = glacierStep - (window._glacStepBase||0) + 1;
+
+var phase = (glacierStep<GLAC_NSTEPS ? 'LGM' : 't_ka '+t_ka.toFixed(2))+
+                ' | iso0 '+Math.round((TEMP_T0_MER+anomaliePaleo(t_ka,latP))*1000/TEMP_LAPSE)+'m';
+
+var msg='[GLACIER] pas '+glacierStep+'/'+GLAC_NSTEPS_TOT+' ('+phase+
+            ') | ext '+st.kmCur.toFixed(1)+'/'+st.kmMax.toFixed(1)+' km² | flux '+(window._glacNbFlux||0)+' tri | ΔV '+((window._glacVolErr||0)/1e6).toFixed(2)+' Mm³ | moy neige '+st.mN.toFixed(1)+
+            'm | moy glace '+st.mG.toFixed(2)+'m | max glace '+st.mxG.toFixed(1)+'m | '+
+            _dtPas.toFixed(0)+' ms/pas (réel) | '+
+            (window._glacTAccum/_nP).toFixed(0)+' ms/pas (moy, dont flux '+
+            ((window._glacTFlux||0)/_nP).toFixed(0)+')';
+    console.log(msg);
+    if (typeof profLog === 'function') profLog();
+    if (typeof profRender === 'function') profRender();
+    if(DSMFLUX.sonde) console.log('[SONDE]', JSON.stringify(DSMFLUX.sonde.top), 'nég:', DSMFLUX.sonde.neg,
+      '| solve:', (DSMFLUX.sonde.tSolve||0).toFixed(1)+'ms /', ((window._glacTFlux||0)/_nP).toFixed(1)+'ms moy',
+      '| bassins:', DSMFLUX.sonde.bassins || 1, '| seg:', DSMFLUX.sonde.seg, 'picard:', DSMFLUX.sonde.picard,
+      (DSMFLUX.sonde.picNonConv ? '(non convergé ×'+DSMFLUX.sonde.picNonConv+', Δ '+DSMFLUX.sonde.dPic+' m)' : ''),
+      'cg:', DSMFLUX.sonde.cg, 'gs:', DSMFLUX.sonde.gs,
+      '|', DSMFLUX.sonde.recale ? ('RECALAGE'+(DSMFLUX.sonde.recaleAuto?' AUTO':'')+' ph'+DSMFLUX.sonde.phase+(DSMFLUX.sonde.camionN?' '+DSMFLUX.sonde.camionN+' tri camion plein (vert local)':' camion vidé')+(DSMFLUX.sonde.postierN?' | POSTIER '+DSMFLUX.sonde.postierN+' tri vidés ('+DSMFLUX.sonde.postierM3+'Mm³)':'')) : ('copie ph'+DSMFLUX.sonde.phase+' lib '+DSMFLUX.sonde.libM+'Mm³'),
+      '| sortie bords', DSMFLUX.sonde.sortieM3, 'Mm³ | vêlage', DSMFLUX.sonde.velageM3, 'Mm³');
+    document.getElementById('vstatus').textContent='❄️ '+phase+
+      ' | ext '+st.kmCur.toFixed(1)+'/'+st.kmMax.toFixed(1)+' km² | glace '+st.mG.toFixed(2)+'m';
+    if(_annee){ glacierDessiner(elev1024); if(fluxActif) fluxDessiner(); }
+  }
+  glacierStep++;
+  glacierLoop(elev1024, run);
+  });
+  }).catch(glacierErreur(run, 'pas'));
+}
+
+/* ── glacierInit ── E : tuile chargée → T : réinitialise l'état, nouveau
+   jeton, chien de garde ; exige les horizons (lance l'ombre et attend si
+   besoin) ; _demarrer → S : aucune. */
+function glacierInit() {
+  if(!elevGrid||!GEO){
+    console.error('[GLACIER] STOP — pas de tuile chargée');
+    document.getElementById('vstatus').textContent='❄️ Charger une tuile d\'abord'; return;
+  }
+  window._glacAdj=null; window._glacExtMax=null;
+  window._glacInsBin=undefined; window._glacFoehnBin=undefined;
+  var elev1024=glacierElev1024();
+  glacierStep  =0;
+  glacierRunning=true;
+  var run = ++glacierRunId;
+  glacierWatchdog(run);
+
+  /* _demarrer — E : horizons prêts → T : partage, foehn initial, filet
+     (réutilisé s'il inclut le foehn), épaisseurs à zéro, basal, insolation
+     des 73 tranches, pool, premier pas → S : aucune. */
+  function _demarrer(){
+    try {
+      if(!window.dsmPartage){
+        if(typeof DSMPARTAGE==='undefined')
+          throw new Error('Partage indisponible');
+        window.dsmPartage=DSMPARTAGE.tracer(ombreElev1024);
+      }
+    } catch(e){
+      console.error('[GLACIER] STOP —', e.message);
+      document.getElementById('vstatus').textContent='❄️ '+e.message;
+      glacierRunning=false; return;
+    }
+    document.getElementById('vstatus').textContent='❄️ Calcul foehn (FFT orographique)…';
+    glacierCalcFoehn(GLAC_EPOQUE_INIT).then(function(foehnC){
+      if(!glacierActif(run)) return;
+      glacierFoehnC = foehnC;
+      try {
+        if(window.dsmFilet && window.dsmFilet.avecFoehn){
+          glacierFilet = window.dsmFilet;
+        } else {
+        var orb0=orbital(GLAC_EPOQUE_INIT), pibar0=orb0.pib+Math.PI;
+        var lat0=(GEO.latMax+GEO.latMin)/2, lon0=(GEO.lonMax+GEO.lonMin)/2;
+        var rh0=sunRiseSet(filetJourChaud(), orb0.e, orb0.eps, pibar0, lat0*Math.PI/180, lon0);
+        var r0=rh0?rh0.rise:6, s0=rh0?rh0.set:18;
+        glacierFilet = DSMFILET.construire(elev1024, window.dsmPartage, {
+          budget: FILET_BUDGET, scaleXY: dsmRes(),
+          estChaud: function(idx, zc){
+            return tempInstant(idx, -1, filetJourChaud(), GLAC_EPOQUE_INIT, r0, s0, false)
+                   + glacierFoehnDT[idx] > 0;
+          }
+        });
+        glacierFilet = DSMFILET.coalescer(glacierFilet);
+        var _fs=DSMFILET.stats(glacierFilet);
+        console.log('[FILET] triangles:', _fs.triangles, '| actifs (froids):', _fs.actifs,
+                    '| mailles:', _fs.mailles, '| maille init:', _fs.mailleInit,
+                    '| σ moy:', _fs.sigmaMoy);
+        glacierFilet.avecFoehn = true;
+        window.dsmFilet = glacierFilet;
+        filOsc = null;
+        if (filActif) filDessiner();
+        }
+        filetNeige = new Float32Array(glacierFilet.nTri);
+        filetGlace = new Float32Array(glacierFilet.nTri);
+        basalInit();
+      } catch(e){
+        console.error('[GLACIER] STOP —', e.message);
+        document.getElementById('vstatus').textContent='❄️ '+e.message;
+        glacierRunning=false; return;
+      }
+      document.getElementById('vstatus').textContent='❄️ Précalcul des 73 cartes d\'insolation (LGM)…';
+      glacierInsolMax = 0;
+      glacierPrechargeInsol(GLAC_EPOQUE_INIT, run, false).then(function(){
+        if(!glacierActif(run)) return;
+        glacierStep=0;
+        return glacierPoolInit().then(function(){
+          if(glacierActif(run)) requestAnimationFrame(function(){glacierLoop(elev1024, run);});
+        });
+      }).catch(glacierErreur(run, 'insolation'));
+    }).catch(glacierErreur(run, 'foehn'));
+  }
+
+  if(!ombreHorizonCopy){
+    document.getElementById('vstatus').textContent='❄️ Calcul horizons terrain (passe 1)…';
+    lancerOmbre();
+    var _poll=setInterval(function(){
+      if(!glacierActif(run)){ clearInterval(_poll); return; }
+      if(ombreHorizonCopy){ clearInterval(_poll); _demarrer(); }
+    },1000);
+  } else {
+    _demarrer();
+  }
+}
+
+/* ── glacierPrechargeInsol ── E : t_ka, jeton, garderEchelle → T : échelle
+   = max des solstices × 1,05 (fixée au premier appel d'un run) ; 73 cartes
+   journalières quantifiées sur 0..255, publiées d'un bloc ; arrêt →
+   rejet « abandon » → S : Promise ; glacierInsolCards. */
+function glacierPrechargeInsol(t_ka, run, garderEchelle){
+  var cartes = new Array(GLAC_NJOURS);
+  /* verifier — E : jeton → T : lève « abandon » si le run n'est plus courant. */
+  function verifier(){ if(!glacierActif(run)) throw new Error('abandon'); }
+  var echelle = (garderEchelle && glacierInsolMax > 0)
+    ? Promise.resolve()
+    : Promise.all([insolationJour(t_ka,172), insolationJour(t_ka,355)]).then(function(sols){
+        var mx=0;
+        for(var s=0;s<sols.length;s++){ var c=sols[s]; for(var i=0;i<c.length;i++) if(c[i]>mx) mx=c[i]; }
+        glacierInsolMax = mx>0 ? mx*1.05 : 1;
+      });
+  return echelle.then(function(){
+    var p = Promise.resolve();
+    for(var s2=0; s2<GLAC_NJOURS; s2++){
+      (function(slice){
+        p = p.then(function(){
+          verifier();
+          var jour = 1 + slice*GLAC_PAS_J;
+          return insolationJour(t_ka, jour).then(function(carte){
+            verifier();
+            var q = new Uint8Array(GLAC_N), inv = 255/glacierInsolMax;
+            for(var i=0;i<GLAC_N;i++){ var v=carte[i]*inv; q[i] = v>255?255:(v<0?0:v); }
+            cartes[slice] = q;
+            document.getElementById('vstatus').textContent =
+              '❄️ Insolation tranche '+(slice+1)+'/'+GLAC_NJOURS+'…';
+          });
+        });
+      })(s2);
+    }
+    return p;
+  }).then(function(){ verifier(); glacierInsolCards = cartes; });
+}
+
+/* ── chkMajLeds ── E : état global → T : allume les témoins (tuile, ombre,
+   insolation, température, partage, glacier), met à jour la courbe ΔT →
+   S : aucune. Appelée toutes les 400 ms. */
+function chkMajLeds() {
+  /* led — E : id, état → T : bascule la classe « on » → S : aucune. */
+  function led(id, on) { var e=document.getElementById(id); if(e) e.classList.toggle('on',!!on); }
+  led('led-map',     !!(typeof elevGrid!=='undefined' && elevGrid));
+  led('led-ombre',   !!(typeof ombreMask!=='undefined' && ombreMask));
+  led('led-insol',   !!(typeof insolMap!=='undefined' && insolMap));
+  led('led-temp',    !!(typeof tempMap!=='undefined' && tempMap));
+  led('led-partage', !!(typeof dsmPartage!=='undefined' && dsmPartage));
+  led('led-glacier', !!(typeof filetGlace!=='undefined' && filetGlace && filetGlace.buffer && filetGlace.buffer.byteLength>0 && filetGlace.some(function(v){return v>0;})));
+  dessinerDeltaC();
+}
+
+var _deltaCTrace = null;
+var _deltaCFond = null;
+var _deltaCGeo  = null;
+/* ── dessinerDeltaC ── E : latitude de la tuile → T : courbe anomaliePaleo
+   de −30 ka à aujourd'hui, axes et graduations, image de fond mémorisée ;
+   ne redessine que si la latitude change → S : canvas #deltaC. */
+function dessinerDeltaC() {
+  var cv = document.getElementById('deltaC');
+  if(!cv || typeof GEO==='undefined' || !GEO || typeof anomaliePaleo!=='function') return;
+  var lat = (GEO.latMax + GEO.latMin) / 2;
+  if(_deltaCTrace === lat) return;
+  _deltaCTrace = lat;
+
+  var nord  = lat >= 0;
+  var table = nord ? (typeof TEMP_PALEO_NORD!=='undefined'?TEMP_PALEO_NORD:null)
+                    : (typeof TEMP_PALEO_SUD !=='undefined'?TEMP_PALEO_SUD :null);
+  var TKA_MIN=GLAC_EPOQUE_INIT, TKA_MAX=2;
+  var W=cv.width, H=cv.height, ctx=cv.getContext('2d');
+  var PADL=4, PADR=4, PADT=4, PADB=4;
+  ctx.clearRect(0,0,W,H);
+
+  var nS=W, ys=new Float32Array(nS), mn=Infinity, mx=-Infinity;
+  for(var k=0;k<nS;k++){
+    var t = TKA_MIN + k/(nS-1)*(TKA_MAX-TKA_MIN);
+    var v = anomaliePaleo(t, lat);
+    ys[k]=v; if(v<mn)mn=v; if(v>mx)mx=v;
+  }
+  if(mx-mn < 0.5){ mx+=0.5; mn-=0.5; }
+  var pad=(mx-mn)*0.10; mn-=pad; mx+=pad;
+  /* xPix / yPix — E : t_ka ou anomalie → S : coordonnée pixel du graphe. */
+  function xPix(t){ return PADL + (t-TKA_MIN)/(TKA_MAX-TKA_MIN)*(W-PADL-PADR); }
+  function yPix(v){ return H-PADB - (v-mn)/(mx-mn)*(H-PADT-PADB); }
+
+  ctx.lineWidth=1;
+  if(0>=mn && 0<=mx){
+    ctx.strokeStyle='#45475a'; ctx.setLineDash([3,3]);
+    ctx.beginPath(); ctx.moveTo(PADL,yPix(0)); ctx.lineTo(W-PADR,yPix(0)); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  ctx.strokeStyle='#313244';
+  ctx.beginPath(); ctx.moveTo(xPix(0),PADT); ctx.lineTo(xPix(0),H-PADB); ctx.stroke();
+
+  ctx.strokeStyle='#89dceb'; ctx.lineWidth=2; ctx.beginPath();
+  for(var k2=0;k2<nS;k2++){ var x=xPix(TKA_MIN+k2/(nS-1)*(TKA_MAX-TKA_MIN)), y=yPix(ys[k2]);
+    if(k2===0) ctx.moveTo(x,y); else ctx.lineTo(x,y); }
+  ctx.stroke();
+
+  if(table){
+    ctx.fillStyle='#f9e2af';
+    for(var p=0;p<table.length;p++){
+      var tp=table[p].t; if(tp<TKA_MIN||tp>TKA_MAX) continue;
+      var px=xPix(tp), py=yPix(anomaliePaleo(tp, lat));
+      ctx.beginPath(); ctx.arc(px,py,2.4,0,2*Math.PI); ctx.fill();
+    }
+  }
+
+  ctx.fillStyle='#585b70'; ctx.font='9px sans-serif';
+  ctx.textBaseline='bottom'; ctx.fillText(TKA_MIN+'ka', PADL+1, H-1);
+  ctx.textAlign='right';     ctx.fillText('+2', W-PADR, H-1); ctx.textAlign='left';
+
+  document.getElementById('deltaC-titre').textContent =
+    'ΔT lat '+lat.toFixed(1)+'° — '+mx.toFixed(0)+'…'+mn.toFixed(0)+'°C';
+
+  _deltaCFond = ctx.getImageData(0,0,W,H);
+  _deltaCGeo  = { lat:lat, TKA_MIN:TKA_MIN, TKA_MAX:TKA_MAX, mn:mn, mx:mx,
+                  PADL:PADL, PADR:PADR, PADT:PADT, PADB:PADB, W:W, H:H };
+}
+
+/* ── deltaCmarqueur ── E : t_ka → T : restaure le fond, place un point sur
+   la courbe à l'époque courante → S : dessin. */
+function deltaCmarqueur(t){
+  var cv=document.getElementById('deltaC');
+  if(!cv || !_deltaCFond || !_deltaCGeo) return;
+  var g=_deltaCGeo, ctx=cv.getContext('2d');
+  ctx.putImageData(_deltaCFond,0,0);
+  var tc=Math.max(g.TKA_MIN,Math.min(g.TKA_MAX,t));
+  var x=g.PADL+(tc-g.TKA_MIN)/(g.TKA_MAX-g.TKA_MIN)*(g.W-g.PADL-g.PADR);
+  var v=anomaliePaleo(tc,g.lat);
+  var y=g.H-g.PADB-(v-g.mn)/(g.mx-g.mn)*(g.H-g.PADT-g.PADB);
+  ctx.fillStyle='#f38ba8';
+  ctx.beginPath(); ctx.arc(x,y,3,0,2*Math.PI); ctx.fill();
+}
+
+document.getElementById('btn-glacier').addEventListener('click', function() {
+  if(glacierRunning){
+    glacierRunning=false;
+    glacierRunId++;
+    this.textContent='❄️ Glacier';
+    this.classList.remove('active');
+    document.getElementById('vstatus').textContent='❄️ Simulation arrêtée';
+  } else {
+    glacierInit();
+    this.textContent='⏹ Stop Glacier';
+    this.classList.add('active');
+  }
+});
+
+/* ── dsmReset ── E : aucune → T : arrête glacier, vidéo, ombre ; vide tous
+   les calques, caches, pools et états (glacier, flux, basal, partage,
+   filet, ombre, insolation, température) ; désactive les boutons
+   dépendants → S : aucune. Appelée avant tout chargement de tuile. */
+function dsmReset() {
+  var ids = ['btn-partage','btn-fil','btn-flux','btn-insol','btn-temp','btn-glacier','btn-ombre'];
+  ids.forEach(function(id){ var b=document.getElementById(id); if(b) b.classList.remove('active'); });
+
+  if (typeof videoRunning !== 'undefined' && videoRunning) videoStop(true);
+
+  glacierRunning = false;
+  glacierRunId++;
+  document.getElementById('btn-glacier').textContent = '\u2744\ufe0f Glacier';
+  if (typeof GLACPOOL !== 'undefined') GLACPOOL.fermer();
+  if (typeof FLUXWORKER !== 'undefined') FLUXWORKER.fermer();
+  if (typeof DSMFLUX !== 'undefined') { DSMFLUX.config.c1Tab = null; DSMFLUX.config.glissTab = null; DSMFLUX.sonde = null; }
+  glacierFilet = null; filetNeige = null; filetGlace = null; glacierOsc = null;
+  glacierFoehnC = null; glacierFoehnDT = null; glacierInsolCards = null; glacierStep = 0;
+  basalEtat = null; basalC1 = null; basalGliss = null; basalPente = null; basalTSurf = null; basalH = null;
+  ['_glacAdj','_glacExtMax','_glacCamion','_glacInsBin','_glacFoehnBin','_glacTLastLog',
+   '_elaAvant','_elaBand','_elaAire','_elaPos','_elaNeg'].forEach(function(k){ window[k] = undefined; });
+  _deltaCTrace = null; _deltaCFond = null; _deltaCGeo = null;
+
+  partageOsc = null; partageActif = false;
+  filOsc = null; filActif = false;
+  fluxOsc = null; fluxActif = false;
+  window.dsmPartage = null; window.dsmMesh = null; window.dsmPixNorm = null; window.dsmFilet = null;
+  if (typeof DSMPARTAGE !== 'undefined') DSMPARTAGE.invalider();
+  if (typeof DSMFIL3D !== 'undefined') DSMFIL3D.fermer();
+
+  if (typeof stopOmbre === 'function') stopOmbre();
+  ombreElev1024 = null; ombreResX = null; ombreResY = 0;
+  ombreHorizonCopy = null; ombreHminCopy = null; ombreHmaxCopy = null; ombreHbordCopy = null;
+  ombreMask = null; ombrePasse3Src = null; ombreSunAz = null; ombreSunEl = null; ombreNSteps = 0;
+  ombreHorizonPret = false; insolRise = null; insolSet = null;
+
+  if (typeof insolPoolFermer === 'function') insolPoolFermer();
+  insolActive = false; insolMap = null; insolImgData = null; insolOsc = null;
+  insolCache = []; insolEnCours = null;
+  ['ctrl-bloc-1','ctrl-bloc-2'].forEach(function(id){ var b=document.getElementById(id);
+    if(b){ b.style.opacity=''; b.style.pointerEvents=''; } });
+
+  tempActive = false; tempOsc = null; tempImgData = null; tempMap = null;
+
+  document.getElementById('btn-insol').disabled = true;
+  document.getElementById('btn-temp').disabled  = true;
+  document.getElementById('btn-video').disabled = true;
+}
+
+(function(){
+  var _r=render;
+  /* Calque glacier : après le rendu normal, superpose la carte neige/glace
+     et les flèches d'écoulement, affiche ou masque la légende du glacier. */
+  render=function(){
+    _r();
+    var DISP2=document.getElementById('c').width;
+    var rx=GLAC_DIM/imgW, ry=GLAC_DIM/imgH;
+    var sX=Math.round(srcX*rx), sY=Math.round(srcY*ry);
+    var sW=Math.round(DISP2*srcPPx*rx), sH=Math.round(DISP2*srcPPx*ry);
+    ctx.imageSmoothingEnabled=false;
+    if(glacierOsc) ctx.drawImage(glacierOsc,sX,sY,sW,sH,0,0,DISP2,DISP2);
+    if(fluxActif && fluxOsc) ctx.drawImage(fluxOsc,sX,sY,sW,sH,0,0,DISP2,DISP2);
+    var lg=document.getElementById('glac-leg');
+    if(lg){
+      lg.style.display = glacierOsc ? 'block' : 'none';
+      document.getElementById('gl-flux').style.display = (fluxActif && fluxOsc) ? 'flex' : 'none';
+    }
+  };
+})();
+
+canvas.addEventListener('wheel',e=>{
+  e.preventDefault(); if(!currentOSC()) return;
+  const r=canvas.getBoundingClientRect();
+  const cx=(e.clientX-r.left)/r.width, cy=(e.clientY-r.top)/r.height;
+  const sx0=srcX+cx*DISP*srcPPx, sy0=srcY+cy*DISP*srcPPx;
+  srcPPx=Math.max(1/16,Math.min(srcPPx*(e.deltaY>0?1.15:1/1.15),Math.max(imgW,imgH)/DISP));
+  srcX=sx0-cx*DISP*srcPPx; srcY=sy0-cy*DISP*srcPPx;
+  render();
+},{passive:false});
+
+let drag=false,dragX0=0,dragY0=0,dragSX0=0,dragSY0=0;
+canvas.addEventListener('mousedown',e=>{
+  drag=true; wrapEl.classList.add('dragging');
+  dragX0=e.clientX; dragY0=e.clientY; dragSX0=srcX; dragSY0=srcY;
+});
+window.addEventListener('mousemove',e=>{
+  if(!drag||!currentOSC()) return;
+  const r=canvas.getBoundingClientRect(), scale=DISP/r.width;
+  srcX=dragSX0-(e.clientX-dragX0)*srcPPx*scale;
+  srcY=dragSY0-(e.clientY-dragY0)*srcPPx*scale;
+  render();
+});
+window.addEventListener('mouseup',()=>{ drag=false; wrapEl.classList.remove('dragging'); });
+
+canvas.addEventListener('mousemove',e=>{
+  if(!elevGrid||!GEO) return;
+  const r=canvas.getBoundingClientRect();
+  const cx=(e.clientX-r.left)/r.width, cy=(e.clientY-r.top)/r.height;
+  const px=srcX+cx*DISP*srcPPx, py=srcY+cy*DISP*srcPPx;
+  const lon=GEO.lonMin+px/imgW*(GEO.lonMax-GEO.lonMin);
+  const lat=GEO.latMax-py/imgH*(GEO.latMax-GEO.latMin);
+  const col=Math.round(px), row=Math.round(py);
+  let alt='mer';
+  if(col>=0&&col<imgW&&row>=0&&row<imgH){
+    const idx=row*imgW+col, v=elevGrid[idx];
+    if(wet&&wet.has(idx)){
+      const prof=waterLevel-v;
+      alt=`eau surf. ${waterLevel.toFixed(0)} m${prof>0?` (prof. ${prof.toFixed(0)} m)`:''}`;
+    } else if(v>0.5&&v<9000) alt=`${v.toFixed(0)} m`;
+  }
+  let insolTxt='';
+  if (typeof insolActive!=='undefined' && insolActive && insolMap){
+    const g=OMBRE_DIM;
+    const gc=Math.min(g-1,Math.max(0,Math.round(px/(imgW-1)*(g-1))));
+    const gr=Math.min(g-1,Math.max(0,Math.round(py/(imgH-1)*(g-1))));
+    const vi=insolMap[gr*g+gc];
+    if(vi>0) insolTxt=`  ☀️ ${(vi*INSOL_W_PAR_H).toFixed(0)} W/m²`;
+  }
+  coordEl.textContent=`${toDMS(lat,true)}  ${toDMS(lon,false)}  ${alt}${insolTxt}`;
+});
+canvas.addEventListener('mouseleave',()=>{ coordEl.textContent='—'; });
+
+const CARTO_KEY='cb1_401e_1_77513c5e0d815ff115135c25';   // clé gratuite : carto.com/basemaps/apikey — vide = étiquettes Esri
+let cartoMap=null, cartoOn=false;
+const cartoBtn=document.getElementById('btn-carto');
+const lmapEl=document.getElementById('lmap');
+
+/* ── syncCarto ── E : vue courante, GEO, taille affichée → T : centre de
+   la vue en degrés ; zoom Web Mercator donnant la même largeur en
+   longitude ; conteneur des étiquettes agrandi puis compressé
+   verticalement de fy = cos(lat)·(pas lat / pas lon) pour retrouver la
+   plate carrée → S : vue de la couche d'étiquettes. */
+function syncCarto(){
+  if(!cartoMap||!GEO) return;
+  const dlon=GEO.lonMax-GEO.lonMin;
+  const lonC=GEO.lonMin+(srcX+DISP*srcPPx/2)/imgW*dlon;
+  const latC=GEO.latMax-(srcY+DISP*srcPPx/2)/imgH*(GEO.latMax-GEO.latMin);
+  const dlat=GEO.latMax-GEO.latMin;
+  const sz=wrapEl.clientWidth||DISP;
+  /* zoom : degrés de longitude visibles sur sz pixels réels */
+  const z=Math.log2(360*sz*imgW/(256*DISP*srcPPx*dlon));
+  /* Mercator étire la latitude de 1/cos(lat) : compression verticale
+     pour retrouver le pas plate-carrée de la grille DSM */
+  const fy=(imgH/dlat)/(imgW/dlon)*Math.cos(latC*Math.PI/180);
+  /* conteneur des étiquettes haut de H/fy (plus de latitudes), puis ramené à H */
+  const fyS=fy.toFixed(5);
+  if(lmapEl.dataset.fy!==fyS){
+    lmapEl.dataset.fy=fyS;
+    lmapEl.style.height=(100/fy)+'%';
+    lmapEl.style.top=(50-50/fy)+'%';
+    lmapEl.style.transformOrigin='50% 50%';
+    lmapEl.style.transform='scaleY('+fyS+')';
+    cartoMap.redimensionner();
+  }
+  cartoMap.vue(latC,lonC,z);
+}
+
+cartoBtn.addEventListener('click',()=>{
+  cartoOn=!cartoOn;
+  cartoBtn.textContent=cartoOn?'🗺 Carto ✓':'🗺 Carto';
+  cartoBtn.style.borderColor=cartoOn?'#89b4fa':'';
+  if(cartoOn){
+    lmapEl.style.display='block';
+    if(!cartoMap){
+      cartoMap=new DsmCarte(lmapEl,{interactif:false,zoomMin:0,zoomMax:23});
+      if(CARTO_KEY)
+        cartoMap.ajouterCouche('https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png?key='+CARTO_KEY,
+          {opacite:0.75,sous:['a','b','c','d'],zMax:20,attribution:'© CARTO © OSM'});
+      else
+        cartoMap.ajouterCouche('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Reference/MapServer/tile/{z}/{y}/{x}',
+          {opacite:0.75,zMax:16,attribution:'© Esri'});
+    }
+    syncCarto();
+  } else lmapEl.style.display='none';
+});
+let mediaRecorder=null, recordedChunks=[];
+const recBtn=document.getElementById('btn-rec');
+const REC_MIME=['video/webm;codecs=vp9','video/webm;codecs=vp8','video/webm']
+  .find(m=>MediaRecorder.isTypeSupported(m))||'video/webm';
+
+recBtn.addEventListener('click',()=>{
+  if(mediaRecorder&&mediaRecorder.state==='recording'){
+    mediaRecorder.stop();
+  } else {
+    recordedChunks=[];
+    const stream=canvas.captureStream(10);
+    mediaRecorder=new MediaRecorder(stream,{mimeType:REC_MIME});
+    mediaRecorder.ondataavailable=e=>{if(e.data.size>0)recordedChunks.push(e.data);};
+    mediaRecorder.onstop=()=>{
+      recBtn.textContent='⏺ REC'; recBtn.classList.remove('recording');
+      const blob=new Blob(recordedChunks,{type:'video/webm'});
+      const url=URL.createObjectURL(blob);
+      const a=document.createElement('a');
+      a.href=url; a.download=`dsm_${new Date().toISOString().slice(0,19).replace(/:/g,'-')}.webm`;
+      a.click(); setTimeout(function(){ URL.revokeObjectURL(url); }, 60000);
+    };
+    mediaRecorder.start(200);
+    recBtn.textContent='⏹ STOP'; recBtn.classList.add('recording');
+  }
+});
+let videoRunning    = false;
+let videoFrameReady = null;
+let videoFrames     = [];
+const VIDEO_FPS     = 10;
+const VIDEO_JPEG_Q  = 0.85;
+
+const videoBtnEl = document.getElementById('btn-video');
+videoBtnEl.addEventListener('click', function() {
+  if (videoRunning) videoStop(true);
+  else videoStart();
+});
+
+/* ── aviBuild ── E : images JPEG (Uint8Array), W, H, fps → T : fichier RIFF
+   AVI 1.0 : en-têtes avih/strh/strf (MJPG), liste movi (chunks 00dc
+   alignés sur 2), index idx1 → S : Blob vidéo/avi. ALGO : « Muxer AVI
+   MJPEG minimal écrit à la main. » */
+function aviBuild(frames, W, H, fps) {
+  var n = frames.length;
+  var moviDataSize = 0, maxFrame = 0;
+  for (var i = 0; i < n; i++) {
+    var sz = frames[i].length;
+    moviDataSize += 8 + sz + (sz & 1);
+    if (sz > maxFrame) maxFrame = sz;
+  }
+  var hdrlSize = 4 + (8+56) + (8 + 4 + (8+56) + (8+40));
+  var moviSize = 4 + moviDataSize;
+  var idx1Size = 16 * n;
+  var riffSize = 4 + (8+hdrlSize) + (8+moviSize) + (8+idx1Size);
+  var total    = 8 + riffSize;
+
+  var buf = new ArrayBuffer(total);
+  var v   = new DataView(buf);
+  var u8  = new Uint8Array(buf);
+  var o   = 0;
+  /* fcc / u32 / u16 — E : code 4 caractères ou entier → T : écrit au
+     curseur o, petit-boutiste → S : aucune. */
+  function fcc(s){ for(var k=0;k<4;k++) u8[o++]=s.charCodeAt(k); }
+  function u32(x){ v.setUint32(o,x,true); o+=4; }
+  function u16(x){ v.setUint16(o,x,true); o+=2; }
+
+  fcc('RIFF'); u32(riffSize); fcc('AVI ');
+
+  fcc('LIST'); u32(hdrlSize); fcc('hdrl');
+  fcc('avih'); u32(56);
+  u32(Math.round(1e6/fps));
+  u32(maxFrame*fps);
+  u32(0);
+  u32(0x10);
+  u32(n);
+  u32(0);
+  u32(1);
+  u32(maxFrame);
+  u32(W); u32(H);
+  u32(0); u32(0); u32(0); u32(0);
+  fcc('LIST'); u32(4+(8+56)+(8+40)); fcc('strl');
+  fcc('strh'); u32(56);
+  fcc('vids'); fcc('MJPG');
+  u32(0);
+  u16(0); u16(0);
+  u32(0);
+  u32(1);
+  u32(fps);
+  u32(0);
+  u32(n);
+  u32(maxFrame);
+  u32(0xFFFFFFFF);
+  u32(0);
+  u16(0); u16(0); u16(W); u16(H);
+  fcc('strf'); u32(40);
+  u32(40);
+  u32(W); u32(H);
+  u16(1); u16(24);
+  fcc('MJPG');
+  u32(W*H*3);
+  u32(0); u32(0); u32(0); u32(0);
+
+  fcc('LIST'); u32(moviSize); fcc('movi');
+  var offsets = new Array(n);
+  var moviStart = o;
+  for (var i = 0; i < n; i++) {
+    offsets[i] = o - moviStart + 4;
+    fcc('00dc'); u32(frames[i].length);
+    u8.set(frames[i], o); o += frames[i].length;
+    if (frames[i].length & 1) u8[o++] = 0;
+  }
+
+  fcc('idx1'); u32(idx1Size);
+  for (var i = 0; i < n; i++) {
+    fcc('00dc');
+    u32(0x10);
+    u32(offsets[i]);
+    u32(frames[i].length);
+  }
+
+  return new Blob([buf], {type:'video/x-msvideo'});
+}
+
+/* ── videoStart ── E : horizons prêts → T : vide la liste d'images, lance
+   le jour 0 → S : aucune. */
+function videoStart() {
+  if (!ombreHorizonCopy ) {
+    document.getElementById('vstatus').textContent =
+      'Calculer l\'ombre terrain d\'abord';
+    return;
+  }
+  videoRunning = true;
+  videoFrames  = [];
+  videoBtnEl.textContent = '⏹ Stop vidéo';
+  videoBtnEl.classList.add('running');
+  videoLoopJour(0);
+}
+
+/* ── videoStop ── E : abandon ? → T : fin de boucle ; sinon assemble l'AVI
+   et le propose au téléchargement ; recalcule l'ombre du jour affiché →
+   S : aucune. */
+function videoStop(abandon) {
+  videoRunning    = false;
+  videoFrameReady = null;
+  videoBtnEl.textContent = '🎬 Vidéo 365j';
+  videoBtnEl.classList.remove('running');
+
+  if (!abandon && videoFrames.length > 0) {
+    document.getElementById('vstatus').textContent =
+      '🎬 Assemblage AVI ' + videoFrames.length + ' frames…';
+    var blob = aviBuild(videoFrames, OMBRE_DIM, OMBRE_DIM, VIDEO_FPS);
+    var url  = URL.createObjectURL(blob);
+    var a    = document.createElement('a');
+    a.href   = url;
+    a.download = 'ombre365_' + ctrlAnnee + '_' +
+      new Date().toISOString().slice(0,19).replace(/:/g,'-') + '.avi';
+    a.click();
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 60000);
+    document.getElementById('vstatus').textContent =
+      '🎬 AVI prêt — ' + videoFrames.length + ' frames @' + VIDEO_FPS +
+      'fps = ' + (videoFrames.length/VIDEO_FPS).toFixed(1) + 's';
+  } else {
+    document.getElementById('vstatus').textContent =
+      'Vidéo abandonnée — ' + jourVersDate(ctrlJour);
+  }
+  videoFrames = [];
+  declencherPasse2();
+}
+
+/* ── videoLoopJour ── E : jour j → T : jour et heure (lever) du panneau,
+   programme la capture (image ombrée, date, JPEG) puis le jour suivant,
+   lance la passe 2 en mode un seul pas → S : aucune. */
+function videoLoopJour(j) {
+  if (!videoRunning) return;
+  if (j > 364) { videoStop(false); return; }
+
+  ctrlJour = j;
+  insolDay = j;
+
+  var rh = ctrlRiseSet();
+  var rise = (rh && rh.rise >= 0) ? rh.rise : 0;
+
+  ctrlHeure = rise + 0.001;
+  insolHour = ctrlHeure;
+
+  /* videoFrameReady — E : masque d'ombre du lever → T : compose l'image
+     ombrée, incruste la date, encode en JPEG, empile, jour suivant. */
+  videoFrameReady = function() {
+    videoFrameReady = null;
+    if (!videoRunning) return;
+
+    var W = OMBRE_DIM, H = OMBRE_DIM;
+    var imgData = ctx.createImageData(W, H);
+    var src = ombrePasse3Src.data, dst = imgData.data;
+    for (var i = 0; i < W * H; i++) {
+      var m = ombreMask[i];
+      var p = i * 4;
+      var f = (m & 0x01) ? ((m & 0x02) ? 0.50 : OMBRE_SHADE) : 1.0;
+      dst[p]   = src[p]   * f;
+      dst[p+1] = src[p+1] * f;
+      dst[p+2] = src[p+2] * f;
+      dst[p+3] = src[p+3];
+    }
+    ctx.putImageData(imgData, 0, 0);
+
+    var lat = (GEO.latMax + GEO.latMin) / 2;
+    var lon = (GEO.lonMax + GEO.lonMin) / 2;
+    var label = jourVersDate(j) + '  ' + hDecToHHMM(rise) +
+      '   ' + lat.toFixed(3) + '\u00b0 ' + lon.toFixed(3) + '\u00b0';
+    ctx.font = 'bold 18px "Courier New", monospace';
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillRect(6, 6, ctx.measureText(label).width + 16, 26);
+    ctx.fillStyle = '#f9e2af';
+    ctx.fillText(label, 14, 24);
+
+    document.getElementById('vstatus').textContent =
+      '🎬 ' + (j+1) + '/365 — ' + jourVersDate(j) + ' ' + hDecToHHMM(rise);
+
+    canvas.toBlob(function(blob) {
+      if (!videoRunning) return;
+      blob.arrayBuffer().then(function(ab) {
+        videoFrames.push(new Uint8Array(ab));
+        videoLoopJour(j + 1);
+      });
+    }, 'image/jpeg', VIDEO_JPEG_Q);
+  };
+
+  lancerPasse2Seule(true);
+}
+
+const bc=new BroadcastChannel('copernicus_dsm');
+bc.onmessage=e=>{
+  if(e.data?.type==='loadFile') loadInViewer(e.data.file);
+  else if(e.data?.type==='loadGrid') loadGridInViewer(e.data);
+};
+window.addEventListener('load',()=>{ bc.postMessage('ready'); setInterval(chkMajLeds, 400); });
+
+document.getElementById('btn-ombre').addEventListener('click', function() {
+  if (ombreRunning) {
+    stopOmbre();
+    ctrlFermer();
+  } else {
+    lancerOmbre();
+    ctrlOuvrir();
+  }
+  this.classList.toggle('active', ombreRunning);
+});
+
+</script>
+
+<script src="dsm-carte.js"></script>
+<script src="dsm-astro.js"></script>
+<script src="dsm-worker-tiff.js"></script>
+<script src="dsm-ombre.js"></script>
+<script src="dsm-insol.js"></script>
+<script src="dsm-temp.js"></script>
+<script src="dsm-partage.js"></script>
+<script src="dsm-mesh.js"></script>
+<script src="dsm-filet.js"></script>
+<script src="dsm-fil3d.js"></script>
+<script src="dsm-foehn.js"></script>
+<script src="dsm-flux.js"></script>
+<script src="dsm-basal.js"></script>
+<script src="dsm-worker-glacier.js"></script>
+<script src="dsm-worker-flux.js"></script>
+<script>
+var PROF = { actif: true, t: Object.create(null), n: Object.create(null) };
+/* ── profWrap ── E : nom, fonction → T : enveloppe qui cumule temps et
+   nombre d'appels, y compris jusqu'à la résolution d'une promesse →
+   S : fonction enveloppée.
+   ⚠ Les fonctions imbriquées sont comptées chacune : les pourcentages
+     du tableau se recouvrent (ex. glacierCalcFoehn et foehnCalc). */
+function profWrap(nom, fn) {
+  if (typeof fn !== 'function') return fn;
+  return function () {
+    if (!PROF.actif) return fn.apply(this, arguments);
+    var t0 = performance.now();
+    var r = fn.apply(this, arguments);
+    if (r && typeof r.then === 'function') {
+      return r.then(function (v) {
+        PROF.t[nom] = (PROF.t[nom] || 0) + (performance.now() - t0);
+        PROF.n[nom] = (PROF.n[nom] || 0) + 1;
+        return v;
+      });
+    }
+    PROF.t[nom] = (PROF.t[nom] || 0) + (performance.now() - t0);
+    PROF.n[nom] = (PROF.n[nom] || 0) + 1;
+    return r;
+  };
+}
+/* _profLogImpl — E : PROF → T : trie par temps cumulé → S : ligne console [PROF]. */
+function _profLogImpl() {
+  var rows = Object.keys(PROF.t).map(function (k) {
+    return { k: k, t: PROF.t[k], n: PROF.n[k] };
+  }).sort(function (a, b) { return b.t - a.t; });
+  console.log('[PROF] ' + rows.map(function (r) {
+    return r.k + ' ' + r.t.toFixed(0) + 'ms/' + r.n + 'x (' + (r.t / r.n).toFixed(2) + 'ms/appel)';
+  }).join(' | '));
+}
+var profLog = profWrap('[PROF] profLog', _profLogImpl);
+
+/* ── profRender ── E : PROF, sonde d'écoulement → T : tableau HTML trié
+   (temps, part, détail au survol) → S : #prof-table. */
+function profRender() {
+  var tb = document.querySelector('#prof-table tbody');
+  if (!tb) return;
+  var rows = Object.keys(PROF.t).map(function (k) {
+    return { k: k, t: PROF.t[k], n: PROF.n[k] };
+  }).sort(function (a, b) { return b.t - a.t; });
+  var total = rows.reduce(function (s, r) { return s + r.t; }, 0) || 1;
+  var html = '';
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i], pct = 100 * r.t / total;
+    var detail = r.n + ' appel' + (r.n > 1 ? 's' : '') + ', ' + (r.t / r.n).toFixed(2) + ' ms/appel';
+    if (r.k === 'FLUXWORKER.pas' && typeof DSMFLUX !== 'undefined' && DSMFLUX.sonde) {
+      var s = DSMFLUX.sonde;
+      detail += ' — ' + s.seg + ' seg, ' + s.picard + ' Picard, ' + s.cg + ' CG, ' + s.gs + ' GS'
+              + (s.nonConv ? ', ' + s.nonConv + ' non-conv (max ' + s.nonConvMax.toFixed(2) + 'm)' : '');
+    }
+    html += '<tr' + (pct >= 20 ? ' class="pf-lourd"' : '') + ' title="' + detail.replace(/"/g, '&quot;') + '">'
+          + '<td class="pf-nom">' + r.k + '</td>'
+          + '<td class="pf-ms">' + r.t.toFixed(0) + '</td>'
+          + '<td class="pf-pct">' + pct.toFixed(0) + '%</td></tr>';
+  }
+  tb.innerHTML = html;
+}
+document.getElementById('prof-reset').addEventListener('click', function () {
+  PROF.t = Object.create(null); PROF.n = Object.create(null);
+  window._glacTAccum = 0; window._glacTFlux = 0;
+  window._glacStepBase = (typeof glacierStep !== 'undefined') ? glacierStep : 0;
+  window._glacTLastLog = undefined;
+  profRender();
+});
+
+if (typeof GLACPOOL !== 'undefined') {
+  GLACPOOL.init      = profWrap('GLACPOOL.init',      GLACPOOL.init);
+  GLACPOOL.pas       = profWrap('GLACPOOL.pas',       GLACPOOL.pas);
+  GLACPOOL.majSoleil = profWrap('GLACPOOL.majSoleil', GLACPOOL.majSoleil);
+  GLACPOOL.majFoehn  = profWrap('GLACPOOL.majFoehn',  GLACPOOL.majFoehn);
+}
+if (typeof FLUXWORKER !== 'undefined') {
+  FLUXWORKER.init = profWrap('FLUXWORKER.init', FLUXWORKER.init);
+  FLUXWORKER.pas  = profWrap('FLUXWORKER.pas',  FLUXWORKER.pas);
+}
+if (typeof DsmFoehn !== 'undefined') {
+  DsmFoehn.foehnCalc = profWrap('DsmFoehn.foehnCalc', DsmFoehn.foehnCalc);
+}
+if (typeof DSMFILET !== 'undefined') {
+  DSMFILET.construire = profWrap('DSMFILET.construire', DSMFILET.construire);
+  DSMFILET.coalescer  = profWrap('DSMFILET.coalescer',  DSMFILET.coalescer);
+}
+if (typeof DSMPARTAGE !== 'undefined') {
+  DSMPARTAGE.tracer   = profWrap('DSMPARTAGE.tracer',   DSMPARTAGE.tracer);
+  DSMPARTAGE.drainage = profWrap('DSMPARTAGE.drainage', DSMPARTAGE.drainage);
+  DSMPARTAGE.bassins  = profWrap('DSMPARTAGE.bassins',  DSMPARTAGE.bassins);
+}
+if (typeof insolationJour === 'function') {
+  insolationJour = profWrap('insolationJour', insolationJour);
+}
+if (typeof glacierStats === 'function')         glacierStats         = profWrap('glacierStats', glacierStats);
+if (typeof glacierDessiner === 'function')      glacierDessiner      = profWrap('glacierDessiner', glacierDessiner);
+if (typeof fluxDessiner === 'function')         fluxDessiner         = profWrap('fluxDessiner', fluxDessiner);
+if (typeof dessinerDeltaC === 'function')       dessinerDeltaC       = profWrap('dessinerDeltaC', dessinerDeltaC);
+if (typeof deltaCmarqueur === 'function')       deltaCmarqueur       = profWrap('deltaCmarqueur', deltaCmarqueur);
+if (typeof glacierCalcFoehn === 'function')     glacierCalcFoehn     = profWrap('glacierCalcFoehn', glacierCalcFoehn);
+if (typeof glacierPrechargeInsol === 'function') glacierPrechargeInsol = profWrap('glacierPrechargeInsol', glacierPrechargeInsol);
+if (typeof window.bilanELA === 'function')      window.bilanELA      = profWrap('bilanELA', window.bilanELA);
+</script>
+</body>
+</html>
