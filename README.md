@@ -111,7 +111,9 @@ entrée lance directement la rupture de cet ouvrage.
   successifs, seul le bassin le plus aval monte), jusqu'à la mer, au bord
   de la carte ou à une cuvette fermée. Sert aussi de trajectoire de
   référence à la rupture de barrage.
-- **Lave** : à venir.
+- **Lave** : éruption choisie dans une liste de cas connus, évent au point
+  cliqué, à l'évent documenté ou saisi en WGS84 (« 37.750° N, 15.005° E ») ;
+  voir plus bas.
 - **Rupture de barrage** : propose les barrages connus à moins de 30 km
   (CFBR en priorité, puis Global Dam Watch, puis FAO AQUASTAT), ou la saisie
   du volume (km³) et de la hauteur d'eau (m) au point cliqué. Cas le pire :
@@ -127,6 +129,7 @@ entrée lance directement la rupture de cet ouvrage.
 | Retenue | Réservoir à niveau horizontal (level-pool, Fread 1988) de volume V et hauteur h0 ; niveau imposé à la brèche, débit sortant calculé par le schéma (écoulement critique dès l'ouverture, cas le pire) ; la cuvette amont est hors domaine (murs), l'onde aval ne peut ni l'envahir ni s'étaler sur la surface du lac du DSM |
 | Onde | Saint-Venant 2D : lame h et vitesse (u, v) en chaque pixel à chaque instant ; schéma décalé conservatif de Stelling & Duinmeijer (2003), transport transverse sous la même forme (Kramer & Stelling 2008) ; l'inertie porte l'eau tout droit dans les virages, la rive la freine (montée ≤ V²/2g), rien n'est imposé en plus |
 | Frottement | Fond : Manning (1891), n = 0,020 s·m⁻¹ᐟ³ (sol nu), semi-implicite par face (freine sans inverser la vitesse, stable en lame mince) ; eau sur eau : viscosité turbulente de Smagorinsky (1963), Cs = 0,17 (Lilly 1967) |
+| Charge solide | Takahashi (2007), formulation 2D de Kanako (Nakatani et al. 2008) : grains transportés avec l'eau, érosion et dépôt vers une concentration d'équilibre fonction de la pente de la surface (lave pierreuse, lave immature, charriage), δe = 0,0007, δd = 0,05, d = 10 cm, C* = 0,6, tanφ = 0,7 ; résistance de lave en d²/h³, jamais inférieure à celle de l'eau claire : elle freine le front et les bords en lame mince, la lame épaisse reste en Manning ; ravinement non traité (relief et lame inchangés, seule la composition évolue) ; masse des grains conservée (pris = déposés + sortis + en charge) |
 | Bords | Mer (z ≤ 0,5 m) et bords de carte : l'eau sort du domaine ; sans donnée : mur |
 | Datation | Arrivée du front par pixel (lame ≥ 10 cm) à chaque pas de calcul (CFL 0,5) |
 | Isochrones | Pas de 1 min, allongé (2, 5, 10… 120 min) dès que deux fronts successifs sont à moins de 10 pixels ; front = pixel atteint le plus loin du pied |
@@ -158,7 +161,7 @@ d'état, console (`console.table`), étiquette du losange.
 
 ![Malpasset : temps observés et calculés aux transformateurs A, B, C](malpasset-essai.png)
 
-| Point | Distance | Observé | Heure EDF | Calculé (n = 0,020) | Écart |
+| Point | Distance | Observé | Heure EDF | Calculé (n = 0,020, eau claire) | Écart |
 |---|---|---|---|---|---|
 | A | 0,9 km | 1 min 40 s | 21 h 13 | 26 s | −74 % |
 | B | 7,3 km | 20 min 40 s | 21 h 34 (entrée de Fréjus) | 11 min 27 s | −45 % |
@@ -187,9 +190,45 @@ dernier isochrone), contours exacts des pixels sans simplification.
 | H_MAX_M, V_MAX_MS | Lame et vitesse maximales atteintes dans la tranche |
 | BARRAGE, V_KM3, H0_M, Q_MAX_M3S | Scénario : ouvrage, volume, hauteur, débit de pointe à la brèche |
 
-Survol : temps d'arrivée, lame à l'instant affiché, lame et vitesse
-maximales. Durées écrites « 45 min » sous une heure, « 1 h 10 » au-delà.
+Survol : temps d'arrivée, lame à l'instant affiché, lame, vitesse et
+concentration en grains maximales. Barre d'état en fin de calcul : volumes
+de grains pris et déposés. Durées écrites « 45 min » sous une heure, « 1 h 10 » au-delà.
 Espace ou ✕ : efface.
+
+---
+
+## Clic droit : coulée de lave
+
+Le dialogue propose des éruptions connues ; chaque ligne donne la lave, le
+débit, le volume, la durée et une phrase qui guide le choix (source au
+survol). L'évent est le point cliqué, ou la position saisie en WGS84
+(EPSG:4326), ou l'évent documenté quand la fiche en a un (📍). Cas pire,
+comme pour les barrages : débit de pointe publié tenu jusqu'à épuisement du
+volume publié.
+
+| Éruption | Lave | Débit | Volume | Durée |
+|---|---|---|---|---|
+| Nyiragongo 2002 | foïdite ultra-fluide | 460 m³/s | 20 Mm³ | 12 h |
+| Villarrica 1971 | basalte-andésite | 800 m³/s | 23 Mm³ | 8 h |
+| Piton de la Fournaise 2007 | basalte de point chaud | 200 m³/s | 140 Mm³ | 8 j |
+| La Palma 2021 | basanite | 42,7 m³/s | 212 Mm³ | 57 j |
+| Etna 2004-2005 (cas d'essai) | basalte de l'Etna | 4 m³/s | 46 Mm³ | 133 j |
+| Lonquimay 1988-1990 | andésite | 80 m³/s | 230 Mm³ | 33 j |
+
+| Étape | Modèle |
+|---|---|
+| Écoulement | Film mince de Bingham (lubrification, inertie négligée) : q = ρgS·Y²(3h − Y)/(6μ), Y = h − τy/(ρgS), nul sous le seuil (Liu & Mei 1989 ; Balmforth et al. 2000) |
+| Viscosité | Bain fondu GRD (Giordano, Russell & Dingwell 2008) calculé depuis la composition, × Einstein-Roscoe (1 − 1,51φ)^−2,5 ; cristaux φ = 0,15 à l'évent, + 0,45 jusqu'au figeage (FLOWGO) |
+| Seuil | 0,01(e^0,08(Te − T) − 1) + 6500φ^2,85 Pa (Dragoni 1989 ; Ryerson et al. 1988) |
+| Refroidissement | FLOWGO (Harris & Rowland 2001 ; PyFLOWGO, Chevrel et al. 2018) pixel par pixel : rayonnement d'une croûte à 500 °C et de fissures à T − 140 K, convection forcée (vent 5 m/s), conduction vers le sol ; inertie sensible et latente (350 kJ/kg) |
+| Figeage | Sous 900 °C la lave figée devient relief (MAGFLOW, Vicari et al. 2007) |
+| Schéma | Implicite en niveau (Euler rétrograde, deux passes de Picard, gradient conjugué préconditionné), boîte de calcul qui suit la coulée ; chaleur transportée par les flux ; pas adaptatif ≤ 2 min |
+| Validation | `BARRAGE_FABRIQUE().essaiHuppert()` : étalement visqueux de Huppert (1982), rayon à +3,5 % (moins d'un pixel), masse conservée ; Etna 2004-2005 sur le relief Copernicus, paramètres fournis sans ajustement, évent de 2 600 m (bas de la fissure, cas pire) : front à 1 656 m d'altitude en fin d'éruption, contre un repère visuel vers 1 980 m ; dénivelé parcouru 944 m contre ≈ 620 m, soit +53 %, en avance comme le veut le cas pire (MAGFLOW seul : arrêt à 0,49 km) |
+
+Affichage, rejeu, isochrones (pas allongé jusqu'à 24 h) et export
+Shapefile sont ceux de l'onde de barrage ; le survol donne l'épaisseur
+finale (fluide et figée) et la vitesse maximale. Durées au-delà de deux
+jours écrites « 3 j 05 h ».
 
 ---
 
@@ -213,12 +252,13 @@ dsm-worker-glacier.js  bilan de masse (pool de Workers)
 dsm-basal.js           glissement basal
 dsm-flux.js            écoulement de la glace
 dsm-worker-flux.js     écoulement parallèle par bassin
-dsm-barrage.js         menu du clic droit, choix du barrage, dessin
-dsm-worker-barrage.js  onde de rupture (Worker), isochrones
+dsm-barrage.js         menu du clic droit, choix du barrage ou de l'éruption, dessin
+dsm-worker-barrage.js  onde de rupture et coulée de lave (Worker), isochrones
 dsm-export-shp.js      export Shapefile de l'emprise datée
 dsm-barrages-cfbr.js   grands barrages français (CFBR), cas d'essai Malpasset
 dsm-barrages-gdw.js    barrages mondiaux (Global Dam Watch v1.0)
 dsm-barrages-fao.js    barrages mondiaux complémentaires (FAO AQUASTAT)
+dsm-laves.js           éruptions connues, viscosité GRD, saisie WGS84
 malpasset-essai.png    capture du cas d'essai Malpasset (README)
 ```
 
@@ -233,13 +273,18 @@ avec une ligne « ALGO ».
 - Simulation « robinet » (clic droit) : écoulement mono-direction (D8), une
   seule sortie par seuil ; passage sous obstacle si la surface dépasse le sol
   à 2 px (ponts, embâcles… mais aussi arêtes minces).
-- Rupture de barrage : eau claire (pas de charge de boue) ; frottement de
-  fond uniforme (Manning 0,020, sol nu), sans occupation du sol ; un plan
+- Rupture de barrage : charge solide à granulométrie unique (d = 10 cm),
+  sans ravinement ni gonflement de la lame ; frottement de fond uniforme
+  (Manning 0,020, sol nu), sans occupation du sol ; un plan
   d'eau du DSM est traité comme du sol (pas de bathymétrie) ; relief actuel
   (un ouvrage détruit est simulé sur la vallée modifiée par sa rupture) ; retenue à niveau horizontal (débit critique dès
   l'ouverture, cas le pire) ; front numérique sur lit sec en retard de 10 à
   14 % sur Ritter ; un seul Worker (ouverture file://, pas de mémoire
   partagée), durée de calcul proportionnelle aux pixels mouillés.
+- Coulée de lave : un seul évent ponctuel (pas de fissure) ; pas de tunnels
+  de lave (la croûte rayonne toujours) ; composition, cristaux et croûte
+  génériques par type de lave ; bain dégazé ; débit constant ; calcul long
+  pour les éruptions de plusieurs mois (Etna 2004 : environ 25 min).
 - La glace ne franchit pas les lignes de partage (bassins indépendants).
 - Rayonnement direct seul, sans diffus ni réfléchi.
 - Pas de courbes de niveau sous 1000 m.
@@ -251,15 +296,11 @@ avec une ligne « ALGO ».
 
 ## À faire
 
-- Rupture de barrage — charge de boue différentielle (reportée, trop
-  complexe) : l'eau claire se charge (arrachement), la résistance augmente
-  quand la lame s'étale, puis se décharge (dépôt) et redevient de l'eau qui
-  inonde. Données retenues : grains d ≈ 10 cm ; ravinement (creusement du
-  relief) non traité. Piste : concentration transportée, érosion et dépôt
-  vers une concentration d'équilibre, résistance de lave (Takahashi 2007).
+- Rupture de barrage — rejouer Malpasset avec la charge solide.
 - Rupture de barrage — validation sur l'essai du coude à 90° de
   Soares-Frazão & Zech (2002, J. Hydraul. Eng. 128(11)).
-- Lave (clic droit) ; volcans posés sur la carte.
+- Lave — fissures (plusieurs évents), tunnels de lave, courbe de débit ;
+  volcans posés sur la carte.
 
 ---
 
