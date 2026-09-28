@@ -115,20 +115,23 @@ entrée lance directement la rupture de cet ouvrage.
 - **Rupture de barrage** : propose les barrages connus à moins de 30 km
   (CFBR en priorité, puis Global Dam Watch, puis FAO AQUASTAT), ou la saisie
   du volume (km³) et de la hauteur d'eau (m) au point cliqué. Cas le pire :
-  retenue pleine, rupture instantanée et totale, sol nu, lit aval sec.
+  retenue pleine, rupture instantanée et totale, sol nu, lit aval sec. Seul
+  l'aval est modélisé : le cas pire est une convention (physiquement
+  impossible) destinée à donner aux populations des temps d'arrivée en
+  avance, donc avec de la marge.
 
 | Étape | Modèle |
 |---|---|
-| Trajectoire | Chemin du robinet depuis l'ouvrage |
-| Ouvrage | Parement aval repéré dans le DSM (pente > 1/5, USBR 1987), pied = cote de fondation, retenue pleine = pied + hauteur |
-| Retenue | Bief prismatique de volume V, hauteur h0, largeur = longueur de digue |
-| Onde | Saint-Venant 1D, schéma de Stelling & Duinmeijer (2003), validé sur la solution de Ritter (1892) |
-| Frottement | Manning, n de Cowan (1956) : terre nue 0,020 × sinuosité |
-| Virages | Surélévation C·v²·B/(g·Rc) (USACE EM 1110-2-1601), plafonnée à v²/2g |
-| Emprise | Sections en travers du DSM (Voronoï + seuils de connexion), date d'arrivée par pixel (lame ≥ 10 cm) |
-| Isochrones | Pas de 1 min, allongé (2, 5, 10… 120 min) dès que deux fronts successifs sont à moins de 10 pixels ; le changement de pas est noté sur la courbe |
-| Datation | À chaque pas de calcul (CFL), pas à 10 s près |
-| Fin | Plus aucun pixel atteint pendant 1 h (48 h au plus) : l'emprise est l'enveloppe complète de la vidange totale, sur-inondation aval comprise |
+| Ouvrage | Pied trouvé sur le chemin du robinet : parement aval repéré dans le DSM (pente > 1/5, USBR 1987), retenue pleine = pied + hauteur ; ouvrage détruit (absent du DSM) : pied au repère de la fiche |
+| Brèche | Totale et instantanée, sur toute la largeur de la vallée sous le niveau de la retenue au pied de l'ouvrage (ou sur la longueur de digue connue) ; ligne de digue étanche ailleurs |
+| Retenue | Réservoir à niveau horizontal (level-pool, Fread 1988) de volume V et hauteur h0 ; niveau imposé à la brèche, débit sortant calculé par le schéma (écoulement critique dès l'ouverture, cas le pire) ; la cuvette amont est hors domaine (murs), l'onde aval ne peut ni l'envahir ni s'étaler sur la surface du lac du DSM |
+| Onde | Saint-Venant 2D : lame h et vitesse (u, v) en chaque pixel à chaque instant ; schéma décalé conservatif de Stelling & Duinmeijer (2003), transport transverse sous la même forme (Kramer & Stelling 2008) ; l'inertie porte l'eau tout droit dans les virages, la rive la freine (montée ≤ V²/2g), rien n'est imposé en plus |
+| Frottement | Fond : Manning (1891), n = 0,020 s·m⁻¹ᐟ³ (sol nu), semi-implicite par face (freine sans inverser la vitesse, stable en lame mince) ; eau sur eau : viscosité turbulente de Smagorinsky (1963), Cs = 0,17 (Lilly 1967) |
+| Bords | Mer (z ≤ 0,5 m) et bords de carte : l'eau sort du domaine ; sans donnée : mur |
+| Datation | Arrivée du front par pixel (lame ≥ 10 cm) à chaque pas de calcul (CFL 0,5) |
+| Isochrones | Pas de 1 min, allongé (2, 5, 10… 120 min) dès que deux fronts successifs sont à moins de 10 pixels ; front = pixel atteint le plus loin du pied |
+| Fin | Plus aucun pixel atteint pendant 1 h (48 h au plus) |
+| Validation | `BARRAGE_FABRIQUE().essaiRitter()` : solution de Ritter (1892), sans frottement ; lame au droit du barrage à 1 % près, masse conservée à 10⁻¹⁵, front de 10 cm en retard de 10 à 14 % (diffusion numérique du premier ordre) ; cas réel : Malpasset 1959 (ci-dessous) |
 
 **Affichage vivant** : pendant le calcul, l'emprise se dessine au fil du
 temps simulé (couleur = date d'arrivée, rouge tôt → violet tard ; opacité
@@ -137,8 +140,38 @@ opacité faible après retrait). Barre d'état : temps, front, débit à la
 brèche, part restante de la retenue.
 
 **Rejeu** (calcul terminé) : lecture / pause, curseur de temps, vitesse
-1 min/s à 1 h/s ; les isochrones apparaissent à mesure. Niveaux interpolés
-entre clichés à la minute.
+1 min/s à 1 h/s ; les isochrones apparaissent à mesure. Lames interpolées
+entre clichés à la minute (pas doublé si la mémoire des clichés dépasse
+6·10⁷ lames).
+
+**Cas d'essai Malpasset (Fréjus, 2 décembre 1959)**
+
+Fiche CFBR marquée « détruit » : V = 0,055 km³ (benchmark CADAM), h = 60 m
+(retenue à la cote 100 m), départ au repère. Trois points de mesure sont
+posés sur la carte (losanges jaunes) : les transformateurs EDF A, B et C
+dont la coupure a daté le passage de l'onde. Coordonnées du benchmark
+(BASEMENT v3, table 5) ramenées du repère local en WGS84 : origine au
+milieu de la ligne de barrage, rotation 5° calée sur le lit du Reyran,
+±200 m. En fin de calcul, le temps d'arrivée est lu au point (pixel atteint
+le plus proche à moins de 200 m sinon) et comparé au temps observé : barre
+d'état, console (`console.table`), étiquette du losange.
+
+![Malpasset : temps observés et calculés aux transformateurs A, B, C](malpasset-essai.png)
+
+| Point | Distance | Observé | Heure EDF | Calculé (n = 0,020) | Écart |
+|---|---|---|---|---|---|
+| A | 0,9 km | 1 min 40 s | 21 h 13 | 26 s | −74 % |
+| B | 7,3 km | 20 min 40 s | 21 h 34 (entrée de Fréjus) | 11 min 27 s | −45 % |
+| C | 8,5 km | 23 min 40 s | ≈ 21 h 35 (parc HT nord de Fréjus) | 15 min 08 s | −36 % |
+
+Le modèle est en avance partout, ce qui est le sens voulu. L'avance se
+construit entre A et B : de B à C, dans la plaine, le calcul met 3 min 41 s
+contre 3 min observées. Causes retenues : le DSM est celui d'aujourd'hui
+(vallée ravinée par l'onde de 1959, plus pentue et plus lisse dans son
+premier kilomètre, plateforme de l'A8), alors que les modèles de référence
+partent de la carte IGN de 1931 ; frottement de sol nu (0,020 contre 0,033
+dans les références) ; eau claire. Au départ, 880 m en 26 s (≈ 34 m/s),
+de l'ordre de la célérité de Ritter 2√(g·h0) ≈ 48 m/s.
 
 **Export ⬇ Shapefile** : ZIP (.shp .shx .dbf .prj .cpg), WGS84
 géographique (EPSG:4326), une entité polygone par tranche d'arrivée
@@ -151,9 +184,11 @@ dernier isochrone), contours exacts des pixels sans simplification.
 | T_FIN_HM | T_FIN en hh:mm |
 | PAS_MIN | Pas d'isochrone de la tranche |
 | SURF_HA, NB_PIX | Surface (sphère authalique WGS84), nombre de pixels |
+| H_MAX_M, V_MAX_MS | Lame et vitesse maximales atteintes dans la tranche |
 | BARRAGE, V_KM3, H0_M, Q_MAX_M3S | Scénario : ouvrage, volume, hauteur, débit de pointe à la brèche |
 
-Survol : temps d'arrivée (min), lame à l'instant affiché et lame maximale.
+Survol : temps d'arrivée, lame à l'instant affiché, lame et vitesse
+maximales. Durées écrites « 45 min » sous une heure, « 1 h 10 » au-delà.
 Espace ou ✕ : efface.
 
 ---
@@ -181,9 +216,10 @@ dsm-worker-flux.js     écoulement parallèle par bassin
 dsm-barrage.js         menu du clic droit, choix du barrage, dessin
 dsm-worker-barrage.js  onde de rupture (Worker), isochrones
 dsm-export-shp.js      export Shapefile de l'emprise datée
-dsm-barrages-cfbr.js   grands barrages français (CFBR)
+dsm-barrages-cfbr.js   grands barrages français (CFBR), cas d'essai Malpasset
 dsm-barrages-gdw.js    barrages mondiaux (Global Dam Watch v1.0)
 dsm-barrages-fao.js    barrages mondiaux complémentaires (FAO AQUASTAT)
+malpasset-essai.png    capture du cas d'essai Malpasset (README)
 ```
 
 Tous les fichiers sont à placer dans le même dossier. Chaque source porte
@@ -197,20 +233,33 @@ avec une ligne « ALGO ».
 - Simulation « robinet » (clic droit) : écoulement mono-direction (D8), une
   seule sortie par seuil ; passage sous obstacle si la surface dépasse le sol
   à 2 px (ponts, embâcles… mais aussi arêtes minces).
-- Rupture de barrage : onde 1D le long d'une seule trajectoire, projetée
-  latéralement ; un plan d'eau du DSM est traité comme du sol (pas de
-  bathymétrie) ; la retenue réelle est remplacée par un bief prismatique de
-  même volume et même hauteur (vidange plus rapide, cas le pire) ; le front
-  numérique sur lit sec retarde d'environ 10 % sur Ritter à la première
-  minute ; lame affichée par pixel = niveau de sa rive (surélévation en
-  courbe comprise) moins le sol, eau piégée derrière un seuil non
-  représentée après retrait.
+- Rupture de barrage : eau claire (pas de charge de boue) ; frottement de
+  fond uniforme (Manning 0,020, sol nu), sans occupation du sol ; un plan
+  d'eau du DSM est traité comme du sol (pas de bathymétrie) ; relief actuel
+  (un ouvrage détruit est simulé sur la vallée modifiée par sa rupture) ; retenue à niveau horizontal (débit critique dès
+  l'ouverture, cas le pire) ; front numérique sur lit sec en retard de 10 à
+  14 % sur Ritter ; un seul Worker (ouverture file://, pas de mémoire
+  partagée), durée de calcul proportionnelle aux pixels mouillés.
 - La glace ne franchit pas les lignes de partage (bassins indépendants).
 - Rayonnement direct seul, sans diffus ni réfléchi.
 - Pas de courbes de niveau sous 1000 m.
 - Glissement basal et « postier » de l'écoulement : hypothèses propres au
   projet, non calibrées.
 - Les passages douteux sont signalés « ⚠ » dans les commentaires du code.
+
+---
+
+## À faire
+
+- Rupture de barrage — charge de boue différentielle (reportée, trop
+  complexe) : l'eau claire se charge (arrachement), la résistance augmente
+  quand la lame s'étale, puis se décharge (dépôt) et redevient de l'eau qui
+  inonde. Données retenues : grains d ≈ 10 cm ; ravinement (creusement du
+  relief) non traité. Piste : concentration transportée, érosion et dépôt
+  vers une concentration d'équilibre, résistance de lave (Takahashi 2007).
+- Rupture de barrage — validation sur l'essai du coude à 90° de
+  Soares-Frazão & Zech (2002, J. Hydraul. Eng. 128(11)).
+- Lave (clic droit) ; volcans posés sur la carte.
 
 ---
 

@@ -1773,7 +1773,7 @@ canvas.addEventListener('mousemove',e=>{
       alt=`eau surf. ${niv.toFixed(0)} m${prof>0.5?` (prof. ${prof.toFixed(0)} m)`:''}`;
     } else if(v>0.5&&v<9000) alt=`${v.toFixed(0)} m`;
     const tb=(typeof barrageArrivee==='function')?barrageArrivee(idx):NaN;
-    if(!isNaN(tb)) alt+=`  🌊 ${tb.toFixed(0)} min`;
+    if(!isNaN(tb)) alt+=`  🌊 ${dureeTxt(tb*60)}`;
   }
   let insolTxt='';
   if (typeof insolActive!=='undefined' && insolActive && insolMap){

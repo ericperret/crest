@@ -1,11 +1,11 @@
 /* ═══════════════════════════════════════════════════════════════════
    FICHIER : dsm-worker-barrage.js - v27/09/2026
-   OBJET   : calcul de l'onde de rupture instantanée d'un barrage le long
-             d'une trajectoire de référence (chemin du « robinet »), et
-             tracé des isochrones du front minute par minute ; envoi en
-             cours de calcul des pixels nouvellement atteints et des
-             niveaux de rive (affichage vivant), clichés des niveaux à la
-             minute (rejeu), enveloppe des niveaux maximaux.
+   OBJET   : onde de rupture instantanée d'un barrage sur la grille du DSM :
+             hauteur d'eau h et vitesse (u, v) en chaque pixel et à chaque
+             instant, au-dessus du relief z ; datation de l'arrivée du
+             front pixel par pixel, lame et vitesse maximales, isochrones ;
+             envoi en cours de calcul des pixels atteints et des lames
+             (affichage vivant), clichés des lames (rejeu).
              La source du Worker est BARRAGE_FABRIQUE.toString() : un seul
              code de calcul, ni importScripts ni dépendance réseau,
              ouverture file:// possible.
@@ -15,34 +15,49 @@
              usage commercial interdit sauf accord écrit de l'auteur (voir LICENSE)
    DÉPEND  : aucune (données reçues par message)
    EXPOSE  : BARRAGE_FABRIQUE, BARRAGEWORKER { lancer, arreter }
-   MESSAGES : « geom » {M, lit} ; « instant » {t, frontKm, q, reste, p, a,
-             m, g, prof} ; « fin » {res} ; « erreur » {msg}.
-   MODÈLES (publiés, aucun paramètre inventé) :
-     · Saint-Venant 1D (1871), forme conservative volume / vitesse, sur
-       sections en travers extraites du DSM ;
-     · schéma décalé conservatif de Stelling & Duinmeijer (2003),
-       « A staggered conservative scheme for every Froude number in
-       rapidly varied shallow water flows », Int. J. Numer. Meth. Fluids
-       43:1329-1354 — valable en torrentiel, fronts secs, ressauts ;
-     · frottement de Manning, coefficient de Cowan (1956) « Estimating
-       hydraulic roughness coefficients », Agricultural Engineering 37 :
-       n = n0 · m5, n0 = 0,020 (terre nue, cas le pire, pas de végétation),
-       m5 = 1,00 / 1,15 / 1,30 selon la sinuosité < 1,2 / < 1,5 / ≥ 1,5
-       (repris par Chow 1959, Open-Channel Hydraulics, tab. 5-5) ;
-     · surélévation en courbe Δy = C · v² · B / (g · Rc), C = 0,5 fluvial,
-       1,0 torrentiel (USACE EM 1110-2-1601, Hydraulic Design of Flood
-       Control Channels), plafonnée par la charge cinétique v²/2g de
-       chaque rive (conservation de l'énergie) ;
-     · rupture instantanée totale, lit aval sec (problème de Ritter 1892) :
-       la retenue est un bief prismatique de hauteur h0, de largeur égale
-       à la longueur de digue, de volume V ; le schéma restitue la
-       solution de Ritter (h = 4/9 h0 au droit du barrage) sans formule
-       imposée ;
+   MESSAGES : « instant » {t, frontKm, q, reste, p, a, prof} ; « fin » {res} ;
+             « erreur » {msg}.
+   MODÈLES (publiés, aucun paramètre ajusté) :
+     · équations de Saint-Venant bidimensionnelles (eaux peu profondes) :
+       masse ∂h/∂t + ∇·(h·V) = 0 ; quantité de mouvement ∂V/∂t + (V·∇)V
+       + g·∇(h + z) = ν·∇²V. Le terme d'inertie (V·∇)V porte l'eau tout
+       droit dans un virage ; face à une rive, g·∇(h + z) la freine :
+       l'énergie ½V² devient hauteur (au plus V²/2g), puis la pente la
+       ramène ; rien n'est imposé en plus ;
+     · schéma décalé conservatif de Stelling & Duinmeijer (2003), « A
+       staggered conservative scheme for every Froude number in rapidly
+       varied shallow water flows », Int. J. Numer. Meth. Fluids
+       43:1329-1354 : h aux centres, u et v aux faces, profondeur de face
+       prise en amont au-dessus du seuil de face max(z gauche, z droit)
+       (fronts secs sans hauteur négative), advection conservant la
+       quantité de mouvement, transport transverse sous la même forme
+       (Kramer & Stelling 2008, Int. J. Numer. Meth. Fluids 58:183-212) ;
+     · frottement de fond de Manning (1891), n = 0,020 s·m^(-1/3) (sol
+       nu), semi-implicite par face : u ← u* / (1 + g·n²·|V|·Δt / ĥ^(4/3)),
+       ĥ = lame de face, |V| avec la vitesse transverse moyennée (freine
+       sans jamais inverser la vitesse, stable pour toute lame) ; essai de
+       Ritter sans frottement ; frottement de l'eau sur l'eau par viscosité turbulente
+       horizontale de Smagorinsky (1963, Monthly Weather Review 91:99-164)
+       ν = (Cs·Δ)²·|S|, Cs = 0,17 (Lilly 1967, IBM Scientific Computing
+       Symposium on Environmental Sciences), Δ = √(dx·dy), glissement
+       libre contre le sec ;
+     · retenue en réservoir à niveau horizontal (« level-pool routing »,
+       Fread 1988, NWS BREACH / DAMBRK) : volume V, hauteur h0, section
+       prismatique (niveau = zf + h0·Vrestant/V) ; brèche totale et
+       instantanée sur toute la largeur de la vallée au pied de l'ouvrage
+       (ou sur la longueur de digue connue), niveau de la retenue imposé
+       aux pixels de brèche, débit sortant calculé par le schéma ; seul
+       l'aval est modélisé : la retenue (cas pire conventionnel zf + h0)
+       est hors domaine, sa surface au MNT n'intervient pas ;
      · parement aval de digue : pente plus raide que 1/5 (talus 2H/1V à
-       4H/1V, USBR 1987, Design of Small Dams, ch. 6) ; embase ≤ 6 h0.
-   CONVENTIONS : altitudes et niveaux en m ; temps en s ; pixels indexés
-             ligne·W + colonne ; x vers l'est, y vers le nord (repère
-             direct) ; côté gauche = à gauche du sens d'écoulement.
+       4H/1V, USBR 1987, Design of Small Dams, ch. 6) ; embase ≤ 6 h0 ;
+     · validation : essaiRitter() compare le schéma à la solution exacte
+       de Ritter (1892), rupture sur fond plat sec sans frottement.
+   CONVENTIONS : altitudes, niveaux, hauteurs en m ; temps en s ; pixels
+             indexés ligne·W + colonne ; u positive vers l'est (colonnes
+             croissantes), v positive vers le sud (lignes croissantes) ;
+             U[p] = vitesse de la face est du pixel p, V[p] = face sud ;
+             dx par ligne (111 320 m/° × cos lat), dy constant.
    ═══════════════════════════════════════════════════════════════════ */
 
 "use strict";
@@ -51,204 +66,58 @@ function BARRAGE_FABRIQUE() {
   "use strict";
 
   var G = 9.81;
-  var N0_COWAN = 0.020;       /* terre, Cowan 1956 */
-  var K_NIV = 256;            /* niveaux par table de section */
-  var H_SEC = 0.01;           /* m : hauteur sous laquelle une face est sèche */
-  var H_ARRIVEE = 0.10;       /* m : lame d'eau qui date l'arrivée du front */
+  var H_SEC = 0.01;           /* m : face sèche sous cette lame */
+  var H_ARRIVEE = 0.10;       /* m : lame qui date l'arrivée du front */
   var CFL = 0.5;
   var DT_MAX = 10;            /* s */
-  var DT_CLICHE = 60;         /* s : pas des clichés de niveaux (rejeu) */
-  var DT_INSTANT_MS = 250;    /* ms réelles entre deux envois « instant » */
+  var CS_SMAG = 0.17;         /* Lilly 1967 */
   var T_MAX = 48 * 3600;      /* s */
   var T_CALME = 3600;         /* s sans pixel nouveau → fin */
-  var T_DEMARRAGE = 30;       /* s : transitoire numérique de la discontinuité initiale exclu du débit de pointe */
+  var T_DEMARRAGE = 30;       /* s : transitoire de la discontinuité initiale exclu du débit de pointe */
+  var DT_CLICHE = 60;         /* s : pas initial des clichés de lames */
+  var CLICHE_MAX = 6e7;       /* lames stockées au plus (Uint16) ; au-delà un cliché sur deux est retiré */
+  var DT_INSTANT_MS = 250;    /* ms réelles entre deux envois « instant » */
   var PAS_ISO = [1, 2, 5, 10, 15, 20, 30, 60, 120];   /* min */
   var ECART_ISO_PX = 10;
-  var N_RES_MAX = 400;        /* mailles maxi du bief de retenue */
-  var RES_RAISON = 1.05;      /* croissance des mailles vers l'amont */
-  var DEMI_FEN_COURBE = 5;    /* stations de lissage de la trajectoire */
-  var DEMI_FEN_SINUO = 10;    /* stations pour la sinuosité de Cowan */
-  var PENTE_PAREMENT = 0.20;  /* parements de digue 2H/1V à 4H/1V (25 à 50 %), USBR 1987 */
+  var DEMI_FEN_COURBE = 5;    /* stations de lissage de la tangente */
+  var PENTE_PAREMENT = 0.20;  /* USBR 1987 */
   var D_RECHERCHE = 2000;     /* m : écart toléré entre le point de l'ouvrage et son parement */
-
-  /* ── Tas ── E : capacité → T : tas binaire min (indice Int32, clé
-     Float64), doublement à saturation → S : objet push/pop, clé du
-     dernier pop dans .cle. */
-  function Tas(cap) { this.i = new Int32Array(cap); this.k = new Float64Array(cap); this.n = 0; this.cle = 0; }
-  Tas.prototype.push = function (idx, key) {
-    if (this.n === this.i.length) {
-      var ni = new Int32Array(this.n * 2), nk = new Float64Array(this.n * 2);
-      ni.set(this.i); nk.set(this.k); this.i = ni; this.k = nk;
-    }
-    var j = this.n++;
-    while (j > 0) {
-      var p = (j - 1) >> 1;
-      if (this.k[p] <= key) break;
-      this.i[j] = this.i[p]; this.k[j] = this.k[p]; j = p;
-    }
-    this.i[j] = idx; this.k[j] = key;
-  };
-  Tas.prototype.pop = function () {
-    var top = this.i[0]; this.cle = this.k[0];
-    var n = --this.n, li = this.i[n], lk = this.k[n], j = 0;
-    for (;;) {
-      var m = 2 * j + 1; if (m >= n) break;
-      if (m + 1 < n && this.k[m + 1] < this.k[m]) m++;
-      if (this.k[m] >= lk) break;
-      this.i[j] = this.i[m]; this.k[j] = this.k[m]; j = m;
-    }
-    this.i[j] = li; this.k[j] = lk;
-    return top;
-  };
+  var L_LIGNE_MAX = 20000;    /* m : demi-longueur maximale de la ligne de digue */
+  var M_MUR = 1, M_MER = 2, M_BORD = 3, M_BRECHE = 4;
+  var N_MANNING = 0.020;      /* s·m^(-1/3) : sol nu */
 
   /* ── geometrieChemin ── E : chemin (pixels), W, dx, dy → T : positions
-     (m), distances entre stations, longueurs de contrôle (demi-distances),
-     tangente lissée sur ±DEMI_FEN_COURBE, courbure κ = dθ/ds, sinuosité
-     arc/corde sur ±DEMI_FEN_SINUO → S : {x, y, ds, len, tx, ty, kappa,
-     sinuo, cum}. */
+     (m, y vers le nord), distances cumulées, tangente lissée sur
+     ±DEMI_FEN_COURBE → S : {ds, cum, tx, ty}. */
   function geometrieChemin(ch, W, dx, dy) {
     var n = ch.length, x = new Float64Array(n), y = new Float64Array(n), i;
     for (i = 0; i < n; i++) { x[i] = (ch[i] % W) * dx; y[i] = -Math.floor(ch[i] / W) * dy; }
     var ds = new Float64Array(Math.max(1, n - 1)), cum = new Float64Array(n);
     for (i = 0; i < n - 1; i++) { ds[i] = Math.hypot(x[i + 1] - x[i], y[i + 1] - y[i]); cum[i + 1] = cum[i] + ds[i]; }
-    var len = new Float64Array(n);
+    var tx = new Float64Array(n), ty = new Float64Array(n);
     for (i = 0; i < n; i++) {
-      var a = i > 0 ? ds[i - 1] : ds[0], b = i < n - 1 ? ds[i] : ds[n - 2 >= 0 ? n - 2 : 0];
-      len[i] = 0.5 * (a + b) || dx;
-    }
-    var w = DEMI_FEN_COURBE, tx = new Float64Array(n), ty = new Float64Array(n), th = new Float64Array(n);
-    for (i = 0; i < n; i++) {
-      var i0 = Math.max(0, i - w), i1 = Math.min(n - 1, i + w);
+      var i0 = Math.max(0, i - DEMI_FEN_COURBE), i1 = Math.min(n - 1, i + DEMI_FEN_COURBE);
       var ux = x[i1] - x[i0], uy = y[i1] - y[i0], nu = Math.hypot(ux, uy) || 1;
-      tx[i] = ux / nu; ty[i] = uy / nu; th[i] = Math.atan2(uy, ux);
-      if (i > 0) { while (th[i] - th[i - 1] > Math.PI) th[i] -= 2 * Math.PI; while (th[i] - th[i - 1] < -Math.PI) th[i] += 2 * Math.PI; }
+      tx[i] = ux / nu; ty[i] = uy / nu;
     }
-    var kappa = new Float64Array(n), sinuo = new Float64Array(n);
-    for (i = 0; i < n; i++) {
-      var j0 = Math.max(0, i - w), j1 = Math.min(n - 1, i + w), s = cum[j1] - cum[j0];
-      kappa[i] = s > 0 ? (th[j1] - th[j0]) / s : 0;
-      var k0 = Math.max(0, i - DEMI_FEN_SINUO), k1 = Math.min(n - 1, i + DEMI_FEN_SINUO);
-      var corde = Math.hypot(x[k1] - x[k0], y[k1] - y[k0]);
-      sinuo[i] = corde > 0 ? (cum[k1] - cum[k0]) / corde : 1;
-    }
-    return { x: x, y: y, ds: ds, len: len, tx: tx, ty: ty, kappa: kappa, sinuo: sinuo, cum: cum };
+    return { ds: ds, cum: cum, tx: tx, ty: ty };
   }
 
-  /* ── sections ── E : DSM, W, H, dx, dy, chemin, i0 (brèche), iF (pied
-     aval, en stations), géométrie du chemin, zPlaf (niveau maximal
-     atteignable = surface de retenue) → T : (1) Voronoï géodésique
-     approché (propagation de la graine la plus proche, distance
-     euclidienne) sur le domaine z < zPlaf ; (2) retenue exclue : cellules
-     du chemin amont et des stations de l'embase situées en amont de la
-     brèche (produit scalaire avec la tangente < 0) — la retenue est
-     modélisée par le bief prismatique ; (3) remplissage prioritaire
-     depuis chaque station restreint à sa cellule, graines à l'altitude
-     DSM, clé = seuil de connexion max(z, clé parente) ; (4) second
-     remplissage libre pour les pixels isolés de leur cellule (affluents)
-     → S : {st Int32 (station ≥ 0, -1 retenue, -2 hors), sig Float32
-     (seuil de connexion)}. */
-  function sections(z, W, H, dx, dy, ch, i0, iF, geo, zPlaf) {
-    var N = W * H, i, p, q, dr, dc, r, c, nr, nc;
-    var vor = new Int32Array(N).fill(-2), graine = new Int32Array(N).fill(-1);
-    var best = new Float64Array(N).fill(Infinity);
-    var T = new Tas(1 << 16);
-    for (i = 0; i < ch.length; i++) {
-      p = ch[i]; if (vor[p] !== -2) continue;
-      vor[p] = i < i0 ? -1 : i - i0; graine[p] = p; best[p] = 0; T.push(p, 0);
-    }
-    while (T.n) {
-      p = T.pop(); if (T.cle > best[p]) continue;
-      var g = graine[p], gr = Math.floor(g / W), gc = g - gr * W;
-      r = Math.floor(p / W); c = p - r * W;
-      for (dr = -1; dr <= 1; dr++) for (dc = -1; dc <= 1; dc++) {
-        if (!dr && !dc) continue;
-        nr = r + dr; nc = c + dc;
-        if (nr < 0 || nr >= H || nc < 0 || nc >= W) continue;
-        q = nr * W + nc;
-        var v = z[q]; if (v <= 0.5 || v >= 9000 || v >= zPlaf) continue;
-        var ex = (nc - gc) * dx, ey = (nr - gr) * dy, d = ex * ex + ey * ey;
-        if (d < best[q]) { best[q] = d; graine[q] = g; vor[q] = vor[p]; T.push(q, d); }
-      }
-    }
-    best = null; graine = null;
-
-    var st = new Int32Array(N).fill(-2), sig = new Float32Array(N);
-    var nAmont = Math.max(iF, 1), bx = geo.x[i0], by = geo.y[i0], btx = geo.tx[i0], bty = geo.ty[i0];
-    for (p = 0; p < N; p++) {
-      var vp = vor[p];
-      if (vp === -1) { st[p] = -1; continue; }
-      if (vp >= 0 && vp < nAmont) {
-        var ox = (p % W) * dx - bx, oy = -Math.floor(p / W) * dy - by;
-        if (ox * btx + oy * bty < 0) st[p] = -1;
-      }
-    }
-    T = new Tas(1 << 16);
-    for (i = i0; i < ch.length; i++) {
-      p = ch[i]; if (st[p] >= 0) continue;
-      st[p] = vor[p] >= 0 ? vor[p] : i - i0; sig[p] = z[p]; T.push(p, sig[p]);
-    }
-    function remplir(restreint) {
-      while (T.n) {
-        p = T.pop(); var k = T.cle, s = st[p];
-        r = Math.floor(p / W); c = p - r * W;
-        for (dr = -1; dr <= 1; dr++) for (dc = -1; dc <= 1; dc++) {
-          if (!dr && !dc) continue;
-          nr = r + dr; nc = c + dc;
-          if (nr < 0 || nr >= H || nc < 0 || nc >= W) continue;
-          q = nr * W + nc;
-          if (st[q] !== -2) continue;
-          if (restreint && vor[q] !== s) continue;
-          var v = z[q]; if (v <= 0.5 || v >= 9000 || v >= zPlaf) continue;
-          var kq = v > k ? v : k;
-          st[q] = s; sig[q] = kq; T.push(q, kq);
-        }
-      }
-    }
-    remplir(true);
-    for (p = 0; p < N; p++) if (st[p] !== -2) T.push(p, sig[p]);
-    remplir(false);
-    return { st: st, sig: sig };
-  }
-
-  /* ── calcul ── E : {elev, W, H, dx, dy, chemin, fin ('mer'|'bord'|
-     'fermé'), mode ('bib'|'manuel'), iDigue (pixel du barrage), V (m³),
-     h0 (m), Ldigue (m, 0 = inconnue)}, envoyer(message, transferts) → T :
-     trajectoire et niveaux de retenue, sections, bief de retenue
-     prismatique, intégration de Saint-Venant (Stelling & Duinmeijer),
-     emprise datée pixel par pixel à chaque pas de calcul, niveau de chaque
-     rive à chaque pas, envois « geom » (une fois) puis « instant » (toutes
-     les DT_INSTANT_MS), clichés des niveaux toutes les DT_CLICHE s ; arrêt
-     quand plus aucun pixel n'est atteint pendant T_CALME (onde amortie :
-     l'emprise est l'enveloppe complète, vidange totale comprise) ; choix
-     des isochrones (pas de 1 min allongé tant que le front avance de moins
-     de ECART_ISO_PX pixels) → S : {arr Float32 (s, -1 sec), iso [{t, pas,
-     px Int32, lab, trans}], wp/wm/wg (pixels mouillés dans l'ordre
-     d'arrivée : indice, rive 2·station+côté, seuil de connexion), snaps
-     Uint16 (nSnap × 2M lames en cm au-dessus du lit), lit Float32 (M),
-     maxNiv Float32 (2M, niveau maximal de rive), info}. */
-  function calcul(E, envoyer) {
-    var z = E.elev, W = E.W, H = E.H, dx = E.dx, dy = E.dy, ch = E.chemin, N = W * H;
-    var np = ch.length, i, j, s, p;
-    var pixM = Math.sqrt(dx * dy);
-
-    /* niveaux de retenue. Ouvrage de bibliothèque (présent dans le DSM) :
-       la trajectoire part du point de l'ouvrage, peut errer sur le plan
-       d'eau ou le couronnement, puis descend le parement aval. Parement =
-       première suite de pas de pente < −PENTE_PAREMENT (paliers de ≤ 2
-       pas tolérés) dont la dénivelée atteint h0/2, cherchée sur les
-       6 h0 + D_RECHERCHE premiers mètres ; i0 = sommet (brèche), iMin =
-       pied ; zf = z(pied), zres = zf + h0 (hauteur sur terrain naturel,
-       retenue pleine) ; les stations du parement sont arasées à zf
-       (ouvrage emporté) ; le chemin amont de i0 appartient à la retenue.
-       Ouvrage sans parement repéré (coordonnées hors de l'ouvrage) : pied
-       = point le plus bas du chemin sur 6 h0, zf = z(pied), brèche au
-       départ. Saisie manuelle : le clic est le fond de vallée au droit
-       d'un barrage fictif, zf = z(clic). Dans tous les cas zres = zf + h0. */
-    var geo = geometrieChemin(ch, W, dx, dy);
-    var zres, zf, i0 = 0, iF = 0, parement = false;
+  /* ── brecheLocaliser ── E : {elev, W, dx, dy, chemin, mode, h0} → T :
+     ouvrage de bibliothèque : parement = première suite de pas de pente
+     < −PENTE_PAREMENT (paliers de ≤ 2 pas tolérés) de dénivelée ≥ h0/2
+     sur les 6 h0 + D_RECHERCHE premiers mètres du chemin du robinet ;
+     pied = bas du parement ; sans parement repéré : point le plus bas du
+     chemin sur 6 h0 ; saisie manuelle : le clic ; zf = z(pied) ; sens
+     de l'écoulement = tangente du chemin au pied → S : {pied, zf, tx, ty,
+     parement}. */
+  function brecheLocaliser(E) {
+    var z = E.elev, ch = E.chemin, np = ch.length, geo = geometrieChemin(ch, E.W, E.dx, E.dy);
+    var iP = 0, parement = false, k;
     if (E.mode === 'bib') {
-      var pente = function (k) { return (z[ch[k + 1]] - z[ch[k]]) / Math.max(geo.ds[k], 1); };
-      var k = 0, dScan = 6 * E.h0 + D_RECHERCHE;
+      var pente = function (q) { return (z[ch[q + 1]] - z[ch[q]]) / Math.max(geo.ds[q], 1); };
+      k = 0;
+      var dScan = 6 * E.h0 + D_RECHERCHE;
       while (k < np - 1 && geo.cum[k] <= dScan && !parement) {
         if (pente(k) >= -PENTE_PAREMENT) { k++; continue; }
         var deb = k, finS = k + 1, j2 = k + 1, palier = 0;
@@ -257,340 +126,410 @@ function BARRAGE_FABRIQUE() {
           else if (++palier > 2) break;
           j2++;
         }
-        if (z[ch[deb]] - z[ch[finS]] >= E.h0 / 2) { parement = true; i0 = deb; iF = finS - deb; zf = z[ch[finS]]; }
+        if (z[ch[deb]] - z[ch[finS]] >= E.h0 / 2) { parement = true; iP = finS; }
         k = finS;
       }
+      if (!parement) for (k = 1; k < np && geo.cum[k] <= 6 * E.h0; k++) if (z[ch[k]] < z[ch[iP]]) iP = k;
     }
-    if (!parement) {
-      i0 = 0; iF = 0; zf = z[ch[0]];
-      if (E.mode === 'bib') {
-        var iB = 0;
-        for (k = 1; k < np && geo.cum[k] <= 6 * E.h0; k++) if (z[ch[k]] < z[ch[iB]]) iB = k;
-        zf = z[ch[iB]]; iF = iB;
-      }
-    }
-    zres = zf + E.h0;
-    var M = np - i0;
-    if (M < 3) throw new Error('trajectoire trop courte');
-    var lit = new Float64Array(M);
-    for (s = 0; s < M; s++) lit[s] = s < iF ? zf : z[ch[i0 + s]];
+    return { pied: ch[iP], zf: z[ch[iP]], tx: geo.tx[iP], ty: geo.ty[iP], parement: parement };
+  }
 
-    /* sections et tables volume / surface plane / surface mouillée */
-    var sec = sections(z, W, H, dx, dy, ch, i0, iF, geo, zres);
-    var st = sec.st, sig = sec.sig;
-    var nb = new Int32Array(M + 1);
-    for (p = 0; p < N; p++) if (st[p] >= 0) nb[st[p] + 1]++;
-    for (s = 0; s < M; s++) nb[s + 1] += nb[s];
-    var liste = new Int32Array(nb[M]), rempl = nb.slice(0, M);
-    var cote = new Int8Array(N);
-    for (p = 0; p < N; p++) {
-      s = st[p]; if (s < 0) continue;
-      liste[rempl[s]++] = p;
-      var k = i0 + s, px = (p % W) * dx - geo.x[k], py = -Math.floor(p / W) * dy - geo.y[k];
-      cote[p] = geo.tx[k] * py - geo.ty[k] * px >= 0 ? 1 : -1;
-    }
-    var K1 = K_NIV + 1;
-    var tVol = new Float64Array(M * K1), tPlan = new Float64Array(M * K1), tMou = new Float64Array(M * K1);
-    var bas = new Float64Array(M), pasN = new Float64Array(M);
-    var lenS = new Float64Array(M);
-    for (s = 0; s < M; s++) lenS[s] = geo.len[i0 + s];
-    for (s = 0; s < M; s++) {
-      var d = nb[s], f = nb[s + 1];
-      var sub = Array.prototype.slice.call(liste.subarray(d, f));
-      sub.sort(function (u, v) { return sig[u] - sig[v]; });
-      for (j = 0; j < sub.length; j++) liste[d + j] = sub[j];
-      var top = Math.max(zres, lit[s] + 1);
-      bas[s] = lit[s]; pasN[s] = (top - lit[s]) / K_NIV;
-      var cA = 0, cAZ = 0, cS = 0, jj = d;
-      for (var kk = 0; kk < K1; kk++) {
-        var eta = lit[s] + kk * pasN[s];
-        while (jj < f && sig[liste[jj]] < eta) {
-          var q = liste[jj], rq = Math.floor(q / W), cq = q - rq * W;
-          var a1 = dx * dy;
-          var gx = (z[rq * W + Math.min(W - 1, cq + 1)] - z[rq * W + Math.max(0, cq - 1)]) / (2 * dx);
-          var gy = (z[Math.min(H - 1, rq + 1) * W + cq] - z[Math.max(0, rq - 1) * W + cq]) / (2 * dy);
-          if (!(Math.abs(gx) < 10)) gx = 0; if (!(Math.abs(gy) < 10)) gy = 0;
-          cA += a1; cAZ += a1 * z[q]; cS += a1 * Math.sqrt(1 + gx * gx + gy * gy);
-          jj++;
+  /* ── brecheTracer ── E : z, W, H, dxR, dy, brèche localisée, zres,
+     longueur de digue (m, 0 = inconnue), masque → T : ligne de digue
+     perpendiculaire à l'écoulement passant par le pied, pixellisée en
+     4-connexité (étanche pour un schéma à 4 faces), parcourue de chaque
+     côté jusqu'au premier pixel de sol ≥ zres (appui) ; pixels de brèche
+     = pixels de la ligne sous zres, contigus au pied, à moins de L/2 si
+     L est connue ; autres pixels de la ligne = murs → S : {B Int32
+     (pixels de brèche), Bd (m)}. */
+  function brecheTracer(z, W, H, dxR, dy, br, zres, Ldig, masque) {
+    var r0 = Math.floor(br.pied / W), c0 = br.pied - r0 * W;
+    var dc = -br.ty, dr = -br.tx;           /* normale (−ty, tx) en repère nord → lignes vers le sud */
+    var B = [br.pied], dMax = 0;
+    for (var sgn = -1; sgn <= 1; sgn += 2) {
+      var prec = br.pied, breche = true;
+      for (var k = 1; ; k++) {
+        var s = 0.25 * k, c = Math.round(c0 + sgn * s * dc), r = Math.round(r0 + sgn * s * dr);
+        if (r < 0 || r >= H || c < 0 || c >= W) break;
+        var q = r * W + c; if (q === prec) continue;
+        var pr = Math.floor(prec / W), pc = prec - pr * W, cand = [];
+        if (pr !== r && pc !== c) cand.push(pr * W + c);
+        cand.push(q);
+        var arret = false;
+        for (var j = 0; j < cand.length; j++) {
+          var e = cand[j], er = Math.floor(e / W), ec = e - er * W;
+          var d = Math.hypot((ec - c0) * dxR[r0], (er - r0) * dy);
+          if (z[e] >= zres || d > L_LIGNE_MAX) { masque[e] = M_MUR; arret = true; break; }
+          if (breche && (Ldig <= 0 || d <= Ldig / 2)) { B.push(e); if (d > dMax) dMax = d; }
+          else { breche = false; masque[e] = M_MUR; }
         }
-        tVol[s * K1 + kk] = cA * eta - cAZ;
-        tPlan[s * K1 + kk] = cA; tMou[s * K1 + kk] = cS;
+        prec = q;
+        if (arret) break;
       }
     }
+    for (var i = 0; i < B.length; i++) masque[B[i]] = M_BRECHE;
+    return { B: Int32Array.from(B), Bd: Math.max(Math.sqrt(dxR[r0] * dy), 2 * dMax + Math.sqrt(dxR[r0] * dy)) };
+  }
 
-    envoyer({ type: 'geom', M: M, lit: Float32Array.from(lit) });
-
-    /* largeur de brèche */
-    var Bd = E.Ldigue > 0 ? E.Ldigue : 0;
-    if (!Bd) {
-      var nm = 0;
-      for (s = iF; s < Math.min(M, iF + 5); s++) {
-        var kz = Math.min(K_NIV, Math.max(0, Math.round((zres - bas[s]) / pasN[s])));
-        Bd += tPlan[s * K1 + kz] / lenS[s]; nm++;
-      }
-      Bd = Math.max(pixM, nm ? Bd / nm : pixM);
+  /* ── retenueExclure ── E : z, W, H, dxR, dy, brèche localisée, zres,
+     masque (ligne de digue déjà posée) → T : germe = premier pixel libre
+     sous zres en remontant la tangente depuis le pied (corps de digue
+     sauté, au plus D_RECHERCHE) ; remplissage 4-connexe des pixels libres
+     sous zres du demi-plan amont de la ligne, marqués murs : la retenue
+     est une réserve virtuelle au niveau du cas pire conventionnel, hors
+     domaine ; l'onde aval ne peut ni l'envahir ni s'y étaler → S : nombre
+     de pixels exclus (0 si aucun germe). */
+  function retenueExclure(z, W, H, dxR, dy, br, zres, masque) {
+    var r0 = Math.floor(br.pied / W), c0 = br.pied - r0 * W, dx0 = dxR[r0];
+    var amont = function (r, c) { return (c - c0) * dx0 * br.tx - (r - r0) * dy * br.ty < 0; };
+    var pas = 0.5 * Math.min(dx0, dy), germe = -1;
+    for (var s = pas; s <= D_RECHERCHE; s += pas) {
+      var c = Math.round(c0 - s * br.tx / dx0), r = Math.round(r0 + s * br.ty / dy);
+      if (r < 0 || r >= H || c < 0 || c >= W) break;
+      var q = r * W + c;
+      if (masque[q] === 0 && z[q] < zres) { germe = q; break; }
     }
-
-    /* grille de calcul : bief de retenue (rectangulaire) puis stations */
-    /* bief de retenue : mailles de pixM au droit du barrage, croissance
-       géométrique ×RES_RAISON vers l'amont jusqu'à la longueur V/(h0·B) */
-    var Lres = E.V / (E.h0 * Bd), mailles = [], cumul = 0, dm = pixM;
-    while (cumul < Lres && mailles.length < N_RES_MAX) {
-      var m1 = Math.min(dm, Lres - cumul);
-      mailles.push(m1); cumul += m1; dm *= RES_RAISON;
-    }
-    if (cumul < Lres) mailles[mailles.length - 1] += Lres - cumul;
-    var nR = mailles.length;
-    var nN = nR + M;
-    var len = new Float64Array(nN), bed = new Float64Array(nN), rect = new Float64Array(nN), nMan = new Float64Array(nN);
-    for (i = 0; i < nR; i++) { len[i] = mailles[nR - 1 - i]; bed[i] = zf; rect[i] = Bd; nMan[i] = N0_COWAN; }
-    for (s = 0; s < M; s++) {
-      var n_ = nR + s, sn = geo.sinuo[i0 + s];
-      len[n_] = lenS[s]; bed[n_] = lit[s]; rect[n_] = s < iF ? Bd : 0;
-      nMan[n_] = N0_COWAN * (sn < 1.2 ? 1.0 : sn < 1.5 ? 1.15 : 1.30);
-    }
-    var dist = new Float64Array(nN - 1);
-    for (j = 0; j < nN - 1; j++) dist[j] = 0.5 * (len[j] + len[j + 1]);
-
-    /* E : nœud, volume → T : niveau par table (recherche dichotomique et
-       interpolation linéaire ; au-delà du sommet, surface plane du
-       sommet) ou section rectangulaire → S : niveau (m). */
-    var kMem = new Int32Array(nN);
-    /* E : nœud, volume → T : section rectangulaire, ou table : intervalle
-       [k, k+1] de volumes encadrant V cherché pas à pas depuis celui du
-       pas précédent (kMem), interpolation linéaire ; au-delà du sommet,
-       surface plane du sommet ; écrit aussi Bn (surface plane / longueur)
-       et Pn (surface mouillée / longueur) → S : niveau (m). */
-    function niveau(n, V) {
-      if (rect[n] > 0) {
-        var hh = V / (rect[n] * len[n]);
-        Bn[n] = rect[n]; Pn[n] = rect[n] + 2 * hh;
-        return bed[n] + hh;
-      }
-      var s = n - nR, o = s * K1, k = kMem[n];
-      if (V >= tVol[o + K_NIV]) {
-        Bn[n] = Math.max(tPlan[o + K_NIV], dx * dy) / len[n]; Pn[n] = Math.max(tMou[o + K_NIV], dx * dy) / len[n];
-        kMem[n] = K_NIV - 1;
-        return bas[s] + K_NIV * pasN[s] + (V - tVol[o + K_NIV]) / Math.max(tPlan[o + K_NIV], dx * dy);
-      }
-      while (k > 0 && tVol[o + k] > V) k--;
-      while (k < K_NIV - 1 && tVol[o + k + 1] <= V) k++;
-      kMem[n] = k;
-      var v0 = tVol[o + k], v1 = tVol[o + k + 1], fr = v1 > v0 ? (V - v0) / (v1 - v0) : 0;
-      if (fr < 0) fr = 0;
-      Bn[n] = Math.max(tPlan[o + k], dx * dy) / len[n]; Pn[n] = Math.max(tMou[o + k], dx * dy) / len[n];
-      return bas[s] + (k + fr) * pasN[s];
-    }
-    /* E : nœud, niveau → T : aire mouillée de la section du nœud à ce
-       niveau (table ou rectangle) → S : aire (m²). */
-    function aireA(n, e) {
-      if (e <= bed[n]) return 0;
-      if (rect[n] > 0) return rect[n] * (e - bed[n]);
-      var s = n - nR, o = s * K1, x = (e - bas[s]) / pasN[s];
-      if (x >= K_NIV) return (tVol[o + K_NIV] + (x - K_NIV) * pasN[s] * Math.max(tPlan[o + K_NIV], dx * dy)) / len[n];
-      var k = Math.floor(x), fr = x - k;
-      return (tVol[o + k] * (1 - fr) + tVol[o + k + 1] * fr) / len[n];
-    }
-
-    /* état initial */
-    var Vn = new Float64Array(nN), eta = new Float64Array(nN), A = new Float64Array(nN);
-    var Bn = new Float64Array(nN), Pn = new Float64Array(nN);
-    var u = new Float64Array(nN - 1), uNouv = new Float64Array(nN - 1), Q = new Float64Array(nN + 1), qb = new Float64Array(nN);
-    for (i = 0; i < nR; i++) Vn[i] = Bd * E.h0 * len[i];
-    var V0 = 0; for (i = 0; i < nR; i++) V0 += Vn[i];
-    var ouvert = E.fin !== 'fermé';
-    function etat() {
-      for (var n = 0; n < nN; n++) { eta[n] = niveau(n, Vn[n]); A[n] = Vn[n] / len[n]; }
-    }
-    etat();
-
-    /* emprise datée */
-    var arr = new Float32Array(N).fill(-1);
-    var ptr = new Int32Array(2 * M), maxNiv = new Float64Array(2 * M).fill(-Infinity);
-    var listeG = [new Int32Array(nb[M]), new Int32Array(nb[M])], debG = [new Int32Array(M + 1), new Int32Array(M + 1)];
-    (function () {
-      for (var cc2 = 0; cc2 < 2; cc2++) {
-        var sgn = cc2 === 0 ? 1 : -1, w = 0;
-        for (var s2 = 0; s2 < M; s2++) {
-          debG[cc2][s2] = w;
-          for (var j2 = nb[s2]; j2 < nb[s2 + 1]; j2++) { var p2 = liste[j2]; if (cote[p2] === sgn) listeG[cc2][w++] = p2; }
-        }
-        debG[cc2][M] = w;
-      }
-      for (var s3 = 0; s3 < M; s3++) { ptr[2 * s3] = debG[0][s3]; ptr[2 * s3 + 1] = debG[1][s3]; }
-    })();
-    var tDernier = 0, levR = new Float64Array(2 * M);
-    var capW = 1 << 16, nW = 0, wp = new Int32Array(capW), wm = new Int32Array(capW), wg = new Float32Array(capW);
-
-    /* ── ajouter ── E : pixel atteint, rive (2·station + côté) → T : ajout
-       aux listes d'arrivée, doublement des tableaux à saturation → S :
-       wp, wm, wg, nW. */
-    function ajouter(p, m) {
-      if (nW === capW) {
-        capW *= 2;
-        var a1 = new Int32Array(capW); a1.set(wp); wp = a1;
-        var a2 = new Int32Array(capW); a2.set(wm); wm = a2;
-        var a3 = new Float32Array(capW); a3.set(wg); wg = a3;
-      }
-      wp[nW] = p; wm[nW] = m; wg[nW] = sig[p]; nW++;
-    }
-
-    /* ── rives ── E : état (η, q̄, A, B) → T : niveau de chaque rive de
-       chaque station : η ± Δy/2, Δy = C·v²·B·|κ|/g (C = 0,5 fluvial, 1
-       torrentiel, USACE EM 1110-2-1601), demi-surélévation plafonnée à
-       v²/2g, + sur la rive extérieure du virage, − sur l'intérieure ;
-       station sèche (lame < H_SEC) → −∞ → S : levR (indice 2·s + côté,
-       côté 0 = gauche, 1 = droite). */
-    function rives() {
-      for (var s = 0; s < M; s++) {
-        var n = nR + s;
-        if (eta[n] - bed[n] < H_SEC) { levR[2 * s] = -Infinity; levR[2 * s + 1] = -Infinity; continue; }
-        var uu = A[n] > 0 ? qb[n] / A[n] : 0, u2 = uu * uu;
-        var Fr = Math.abs(uu) / Math.sqrt(G * Math.max(A[n] / Bn[n], 1e-6));
-        var dY = (Fr < 1 ? 0.5 : 1.0) * u2 * Bn[n] * Math.abs(geo.kappa[i0 + s]) / G;
-        var demi = Math.min(0.5 * dY, u2 / (2 * G));
-        var ext = geo.kappa[i0 + s] > 0 ? -1 : 1;      /* κ>0 : virage à gauche, rive extérieure à droite */
-        levR[2 * s] = eta[n] + (ext === 1 ? demi : -demi);
-        levR[2 * s + 1] = eta[n] + (ext === -1 ? demi : -demi);
+    if (germe < 0) return 0;
+    var pile = [germe], n = 0;
+    masque[germe] = M_MUR;
+    while (pile.length) {
+      var p = pile.pop(), pr = (p / W) | 0, pc = p - pr * W; n++;
+      var vs = [pc > 0 ? p - 1 : -1, pc < W - 1 ? p + 1 : -1, pr > 0 ? p - W : -1, pr < H - 1 ? p + W : -1];
+      for (var j = 0; j < 4; j++) {
+        var v = vs[j]; if (v < 0 || masque[v] !== 0 || z[v] >= zres) continue;
+        var vr = (v / W) | 0; if (!amont(vr, v - vr * W)) continue;
+        masque[v] = M_MUR; pile.push(v);
       }
     }
+    return n;
+  }
 
-    /* ── peindre ── E : instant t, levR → T : pour chaque rive d'une
-       station mouillée (lame ≥ H_ARRIVEE) dont le niveau dépasse son
-       maximum passé, avance le pointeur de la liste triée par seuil de
-       connexion tant que seuil + H_ARRIVEE < niveau ; pixel jamais atteint
-       → date t et ajout à la liste d'arrivée → S : arr, maxNiv, wp/wm/wg. */
-    function peindre(t) {
-      for (var s = 0; s < M; s++) {
-        var n = nR + s; if (eta[n] - bed[n] < H_ARRIVEE) continue;
-        for (var cc3 = 0; cc3 < 2; cc3++) {
-          var m = 2 * s + cc3, lev = levR[m];
-          if (lev <= maxNiv[m]) continue;
-          maxNiv[m] = lev;
-          var L = listeG[cc3], fin = debG[cc3][s + 1], jp = ptr[m];
-          while (jp < fin && sig[L[jp]] + H_ARRIVEE < lev) {
-            var q = L[jp];
-            if (arr[q] < 0) { arr[q] = t; ajouter(q, m); tDernier = t; }
-            jp++;
+  /* ── Grille ── E : z, W, H, dxR (m par ligne), dy, masque (M_MUR,
+     M_MER, M_BORD, M_BRECHE ou 0), ferme (bit 1 face est, bit 2 face sud
+     fermées) → T : état h (Float64), U, V (faces est et sud), flux par
+     unité de largeur QX, QY, liste des pixels actifs (mouillés et leurs
+     4 voisins) ; pas(dt) = continuité puis quantité de mouvement →
+     S : objet grille. */
+  function Grille(z, W, H, dxR, dy, masque, ferme) {
+    var N = W * H;
+    this.z = z; this.W = W; this.H = H; this.dxR = dxR; this.dy = dy;
+    this.m = masque; this.f = ferme;
+    this.h = new Float64Array(N);
+    this.U = new Float32Array(N); this.V = new Float32Array(N);
+    this.Un = new Float32Array(N); this.Vn = new Float32Array(N);
+    this.QX = new Float32Array(N); this.QY = new Float32Array(N);
+    this.fac = new Float32Array(N);
+    this.etat = new Uint8Array(N);          /* 0 inactif, 1 actif, 2 actif et voisins activés */
+    this.L = new Int32Array(1 << 16); this.nL = 0;
+    this.wS = new Float64Array(H);          /* largeur des faces sud (m) */
+    this.aire = new Float64Array(H);
+    for (var r = 0; r < H; r++) {
+      this.wS[r] = r < H - 1 ? 0.5 * (dxR[r] + dxR[r + 1]) : dxR[r];
+      this.aire[r] = dxR[r] * dy;
+    }
+    this.nuMax = 0;
+    this.n2 = 0;                            /* n² de Manning (0 : sans frottement) */
+  }
+  /* E : pixel → T : ajout à la liste active (doublement) → S : aucune. */
+  Grille.prototype.activer = function (p) {
+    if (this.etat[p] || this.m[p] === M_MUR) return;
+    if (this.nL === this.L.length) { var n = new Int32Array(this.nL * 2); n.set(this.L); this.L = n; }
+    this.etat[p] = 1; this.L[this.nL++] = p;
+  };
+  /* E : pixel mouillé → T : active ses 4 voisins → S : aucune. */
+  Grille.prototype.voisins = function (p) {
+    var W = this.W, r = (p / W) | 0, c = p - r * W;
+    this.etat[p] = 2;
+    if (c > 0) this.activer(p - 1);
+    if (c < W - 1) this.activer(p + 1);
+    if (r > 0) this.activer(p - W);
+    if (r < this.H - 1) this.activer(p + W);
+  };
+  /* E : pixel, face ('x' est, 'y' sud) → T : face hors grille, touchant un
+     mur ou fermée → S : booléen. */
+  Grille.prototype.fermeeX = function (p, c) {
+    return c >= this.W - 1 || (this.f[p] & 1) || this.m[p] === M_MUR || this.m[p + 1] === M_MUR;
+  };
+  Grille.prototype.fermeeY = function (p, r) {
+    return r >= this.H - 1 || (this.f[p] & 2) || this.m[p] === M_MUR || this.m[p + this.W] === M_MUR;
+  };
+
+  /* ── dtCFL ── E : état → T : pas de Courant ≤ CFL sur les pixels
+     mouillés, (|u| + c)/dx + (|v| + c)/dy, c = √(g·h) ; stabilité de la
+     viscosité explicite dt ≤ Δ²/(8·νmax) ; plafond DT_MAX → S : dt (s). */
+  Grille.prototype.dtCFL = function () {
+    var dt = DT_MAX, W = this.W, h = this.h, U = this.U, V = this.V, L = this.L;
+    for (var k = 0; k < this.nL; k++) {
+      var p = L[k]; if (h[p] < H_SEC) continue;
+      var r = (p / W) | 0, c = p - r * W, ce = Math.sqrt(G * h[p]);
+      var uu = Math.max(Math.abs(U[p]), c > 0 ? Math.abs(U[p - 1]) : 0);
+      var vv = Math.max(Math.abs(V[p]), r > 0 ? Math.abs(V[p - W]) : 0);
+      var inv = (uu + ce) / this.dxR[r] + (vv + ce) / this.dy;
+      if (CFL / inv < dt) dt = CFL / inv;
+    }
+    if (this.nuMax > 0) {
+      var d2 = Math.min(this.dxR[0], this.dxR[this.H - 1], this.dy); d2 *= d2;
+      if (d2 / (8 * this.nuMax) < dt) dt = d2 / (8 * this.nuMax);
+    }
+    return dt;
+  };
+
+  /* ── continuite ── E : dt → T : (1) flux de face q = u·ĥ, ĥ = niveau du
+     pixel amont (sens de u) moins le seuil de face max(z gauche, z
+     droit), nul si négatif ; (2) limiteur de positivité : les flux
+     sortant d'un pixel sont réduits si leur volume dépasse l'eau
+     disponible ; (3) bilan volumique de chaque pixel actif → S : aucune
+     (h, QX, QY à jour). */
+  Grille.prototype.continuite = function (dt) {
+    var W = this.W, z = this.z, h = this.h, U = this.U, V = this.V;
+    var QX = this.QX, QY = this.QY, fac = this.fac, L = this.L, nL = this.nL, dy = this.dy, k, p, r, c, u, up, hf;
+    for (k = 0; k < nL; k++) fac[L[k]] = 0;
+    for (k = 0; k < nL; k++) {
+      p = L[k]; r = (p / W) | 0; c = p - r * W;
+      if (this.fermeeX(p, c)) QX[p] = 0;
+      else {
+        u = U[p]; up = u > 0 ? p : p + 1;
+        hf = u === 0 ? 0 : z[up] + h[up] - Math.max(z[p], z[p + 1]);
+        QX[p] = hf > 0 ? u * hf : 0;
+        if (QX[p] > 0) fac[p] += QX[p] * dy; else if (QX[p] < 0) fac[p + 1] -= QX[p] * dy;
+      }
+      if (this.fermeeY(p, r)) QY[p] = 0;
+      else {
+        u = V[p]; up = u > 0 ? p : p + W;
+        hf = u === 0 ? 0 : z[up] + h[up] - Math.max(z[p], z[p + W]);
+        QY[p] = hf > 0 ? u * hf : 0;
+        if (QY[p] > 0) fac[p] += QY[p] * this.wS[r]; else if (QY[p] < 0) fac[p + W] -= QY[p] * this.wS[r];
+      }
+    }
+    for (k = 0; k < nL; k++) {
+      p = L[k]; r = (p / W) | 0;
+      var sortie = fac[p] * dt, dispo = h[p] * this.aire[r];
+      fac[p] = sortie > dispo ? dispo / sortie : 1;
+    }
+    for (k = 0; k < nL; k++) {
+      p = L[k];
+      if (QX[p] > 0) QX[p] *= fac[p]; else if (QX[p] < 0) QX[p] *= fac[p + 1];
+      if (QY[p] > 0) QY[p] *= fac[p]; else if (QY[p] < 0) QY[p] *= fac[p + W];
+    }
+    for (k = 0; k < nL; k++) {
+      p = L[k]; r = (p / W) | 0; c = p - r * W;
+      var bil = -QX[p] * dy - QY[p] * this.wS[r];
+      if (c > 0) bil += QX[p - 1] * dy;
+      if (r > 0) bil += QY[p - W] * this.wS[r - 1];
+      var hn = h[p] + dt * bil / this.aire[r];
+      h[p] = hn > 0 ? hn : 0;
+    }
+  };
+
+  /* ── mouvement ── E : dt, h et flux de ce pas → T : pour chaque face
+     mouillée (niveau max − seuil ≥ H_SEC) : advection conservative
+     longitudinale [(q̄R·u*R − q̄L·u*L) − u·(q̄R − q̄L)] / (h̄·Δx) et
+     transverse sous la même forme avec les flux des faces voisines, u*
+     pris en amont selon le signe du flux ; pente de surface g·Δ(h+z)/Δx ;
+     viscosité de Smagorinsky ν·∇²u, voisins secs remplacés par la face
+     elle-même (glissement libre) ; face sèche → vitesse nulle → S :
+     U, V du pas suivant, νmax. */
+  Grille.prototype.mouvement = function (dt) {
+    var W = this.W, H = this.H, z = this.z, h = this.h, U = this.U, V = this.V, Un = this.Un, Vn = this.Vn;
+    var QX = this.QX, QY = this.QY, L = this.L, nL = this.nL, dy = this.dy, nuMax = 0;
+    for (var k = 0; k < nL; k++) {
+      var p = L[k], r = (p / W) | 0, c = p - r * W, dx = this.dxR[r];
+      var D = Math.sqrt(dx * dy), C2 = (CS_SMAG * D) * (CS_SMAG * D);
+      /* face est : p | q */
+      if (this.fermeeX(p, c)) Un[p] = 0;
+      else {
+        var q = p + 1, zp = z[p] + h[p], zq = z[q] + h[q];
+        if (Math.max(zp, zq) - Math.max(z[p], z[q]) < H_SEC) Un[p] = 0;
+        else {
+          var u = U[p], hx = 0.5 * (h[p] + h[q]);
+          var uw = c > 0 ? U[p - 1] : u, ue = c + 1 < W - 1 ? U[q] : u;
+          var un = r > 0 ? U[p - W] : u, us = r < H - 1 ? U[p + W] : u;
+          var adv = 0;
+          if (hx > H_SEC) {
+            var qcL = 0.5 * ((c > 0 ? QX[p - 1] : 0) + QX[p]), qcR = 0.5 * (QX[p] + (c + 1 < W - 1 ? QX[q] : 0));
+            var usL = qcL > 0 ? uw : u, usR = qcR > 0 ? u : ue;
+            var qyN = r > 0 ? 0.5 * (QY[p - W] + QY[q - W]) : 0, qyS = r < H - 1 ? 0.5 * (QY[p] + QY[q]) : 0;
+            var usN = qyN > 0 ? un : u, usS = qyS > 0 ? u : us;
+            adv = ((qcR * usR - qcL * usL) - u * (qcR - qcL)) / (hx * dx) +
+                  ((qyS * usS - qyN * usN) - u * (qyS - qyN)) / (hx * dy);
           }
-          ptr[m] = jp;
+          /* Smagorinsky */
+          var mw = c > 0 && (h[p - 1] > H_SEC || h[p] > H_SEC), me = c + 1 < W - 1 && (h[q] > H_SEC || h[q + 1] > H_SEC);
+          var mn = r > 0 && (h[p - W] > H_SEC || h[q - W] > H_SEC), ms = r < H - 1 && (h[p + W] > H_SEC || h[q + W] > H_SEC);
+          var aW = mw ? uw : u, aE = me ? ue : u, aN = mn ? un : u, aS = ms ? us : u;
+          var vcp = 0.5 * (V[p] + (r > 0 ? V[p - W] : V[p])), vcq = 0.5 * (V[q] + (r > 0 ? V[q - W] : V[q]));
+          var ux = (aE - aW) / (2 * dx), uy = (aS - aN) / (2 * dy), vx = (vcq - vcp) / dx;
+          var vy = 0.5 * ((V[p] + V[q]) - (r > 0 ? V[p - W] + V[q - W] : V[p] + V[q])) / dy;
+          var nu = C2 * Math.sqrt(2 * ux * ux + 2 * vy * vy + (uy + vx) * (uy + vx));
+          if (nu > nuMax) nuMax = nu;
+          var lap = (aE - 2 * u + aW) / (dx * dx) + (aS - 2 * u + aN) / (dy * dy);
+          Un[p] = u - dt * (adv + G * (zq - zp) / dx - nu * lap);
+          if (this.n2 > 0) {
+            var hfx = Math.max(zp, zq) - Math.max(z[p], z[q]), vtx = 0.5 * (vcp + vcq);
+            Un[p] /= 1 + dt * G * this.n2 * Math.sqrt(u * u + vtx * vtx) / Math.pow(hfx, 4 / 3);
+          }
+        }
+      }
+      /* face sud : p | s */
+      if (this.fermeeY(p, r)) Vn[p] = 0;
+      else {
+        var s = p + W, zp2 = z[p] + h[p], zs = z[s] + h[s];
+        if (Math.max(zp2, zs) - Math.max(z[p], z[s]) < H_SEC) Vn[p] = 0;
+        else {
+          var v = V[p], hy = 0.5 * (h[p] + h[s]), wf = this.wS[r];
+          var vn = r > 0 ? V[p - W] : v, vs = r + 1 < H - 1 ? V[s] : v;
+          var vw = c > 0 ? V[p - 1] : v, ve = c < W - 1 ? V[p + 1] : v;
+          var adv2 = 0;
+          if (hy > H_SEC) {
+            var qcN = 0.5 * ((r > 0 ? QY[p - W] : 0) + QY[p]), qcS = 0.5 * (QY[p] + (r + 1 < H - 1 ? QY[s] : 0));
+            var vsN = qcN > 0 ? vn : v, vsS = qcS > 0 ? v : vs;
+            var qxW = c > 0 ? 0.5 * (QX[p - 1] + QX[s - 1]) : 0, qxE = c < W - 1 ? 0.5 * (QX[p] + QX[s]) : 0;
+            var vsW = qxW > 0 ? vw : v, vsE = qxE > 0 ? v : ve;
+            adv2 = ((qcS * vsS - qcN * vsN) - v * (qcS - qcN)) / (hy * dy) +
+                   ((qxE * vsE - qxW * vsW) - v * (qxE - qxW)) / (hy * wf);
+          }
+          var mn2 = r > 0 && (h[p - W] > H_SEC || h[p] > H_SEC), ms2 = r + 1 < H - 1 && (h[s] > H_SEC || h[s + W] > H_SEC);
+          var mw2 = c > 0 && (h[p - 1] > H_SEC || h[s - 1] > H_SEC), me2 = c < W - 1 && (h[p + 1] > H_SEC || h[s + 1] > H_SEC);
+          var bN = mn2 ? vn : v, bS = ms2 ? vs : v, bW = mw2 ? vw : v, bE = me2 ? ve : v;
+          var ucp = 0.5 * (U[p] + (c > 0 ? U[p - 1] : U[p])), ucs = 0.5 * (U[s] + (c > 0 ? U[s - 1] : U[s]));
+          var vy2 = (bS - bN) / (2 * dy), vx2 = (bE - bW) / (2 * wf), uy2 = (ucs - ucp) / dy;
+          var ux2 = 0.5 * ((U[p] + U[s]) - (c > 0 ? U[p - 1] + U[s - 1] : U[p] + U[s])) / wf;
+          var nu2 = C2 * Math.sqrt(2 * ux2 * ux2 + 2 * vy2 * vy2 + (uy2 + vx2) * (uy2 + vx2));
+          if (nu2 > nuMax) nuMax = nu2;
+          var lap2 = (bS - 2 * v + bN) / (dy * dy) + (bE - 2 * v + bW) / (wf * wf);
+          Vn[p] = v - dt * (adv2 + G * (zs - zp2) / dy - nu2 * lap2);
+          if (this.n2 > 0) {
+            var hfy = Math.max(zp2, zs) - Math.max(z[p], z[s]), uty = 0.5 * (ucp + ucs);
+            Vn[p] /= 1 + dt * G * this.n2 * Math.sqrt(v * v + uty * uty) / Math.pow(hfy, 4 / 3);
+          }
         }
       }
     }
+    var t1 = this.U; this.U = Un; this.Un = t1;
+    var t2 = this.V; this.V = Vn; this.Vn = t2;
+    this.nuMax = nuMax;
+  };
 
-    /* clichés : lame de chaque rive au-dessus du lit de sa station, en cm
-       (Uint16, 0 = sec, plafond 655,35 m) */
-    var M2 = 2 * M, nSnap = 0, capS = 64, snaps = new Uint16Array(M2 * capS), prof = new Uint16Array(M2);
-    /* ── profondeurs ── E : levR → T : (niveau − lit) × 100 arrondi, borné
-       à [0, 65535] → S : tableau de 2M lames (cm). */
-    function profondeurs(out) {
-      for (var m = 0; m < M2; m++) {
-        var l = levR[m];
-        var d = l === -Infinity ? 0 : Math.round((l - lit[m >> 1]) * 100);
-        out[m] = d < 0 ? 0 : d > 65535 ? 65535 : d;
-      }
+  /* ── calcul ── E : {elev, W, H, dy, dxR (m par ligne), chemin (robinet,
+     sert à trouver le pied), fin, mode ('bib'|'manuel'), V (m³), h0 (m),
+     Ldigue (m, 0 = inconnue)}, envoyer(message, transferts) → T : pied et
+     ligne de digue ; masque (murs : sans donnée, ligne de digue, retenue
+     amont hors domaine (retenueExclure) ; puits :
+     mer z ≤ 0,5 m et bords de grille, l'eau qui y entre sort du domaine) ;
+     faces amont des pixels de brèche fermées ; réservoir à niveau
+     horizontal ; intégration jusqu'à T_CALME sans pixel nouveau ; date
+     d'arrivée (lame ≥ H_ARRIVEE), lame et vitesse maximales ; front =
+     pixel atteint le plus éloigné du pied ; clichés des lames ; isochrones
+     (pas de 1 min allongé tant que le front avance de moins de
+     ECART_ISO_PX pixels) → S : {arr Float32 (s, −1 sec), iso [{t, pas, px,
+     lab, trans}], wp (pixels atteints, ordre d'arrivée), wh, wv (lame et
+     vitesse maximales), snapT, snapOff, snapData (lames en cm), info} ;
+     frottement de Manning N_MANNING sur toute la grille. */
+  function calcul(E, envoyer) {
+    var z = E.elev, W = E.W, H = E.H, dy = E.dy, dxR = E.dxR, N = W * H, p, i, k;
+    var br = brecheLocaliser({ elev: z, W: W, dx: dxR[Math.floor(H / 2)], dy: dy, chemin: E.chemin, mode: E.mode, h0: E.h0 });
+    var zf = br.zf, zres = zf + E.h0;
+    var masque = new Uint8Array(N), ferme = new Uint8Array(N);
+    for (p = 0; p < N; p++) {
+      var v0 = z[p], r0 = (p / W) | 0, c0 = p - r0 * W;
+      if (v0 >= 9000) masque[p] = M_MUR;
+      else if (v0 <= 0.5) masque[p] = M_MER;
+      else if (r0 === 0 || c0 === 0 || r0 === H - 1 || c0 === W - 1) masque[p] = M_BORD;
     }
-    /* ── cliche ── E : levR → T : ajoute un cliché de lames, doublement
-       du tampon à saturation → S : snaps, nSnap. */
-    function cliche() {
-      if (nSnap === capS) { capS *= 2; var s2 = new Uint16Array(M2 * capS); s2.set(snaps); snaps = s2; }
-      profondeurs(prof); snaps.set(prof, nSnap * M2); nSnap++;
+    var lig = brecheTracer(z, W, H, dxR, dy, br, zres, E.Ldigue || 0, masque);
+    var B = lig.B, nB = B.length;
+    var nRetenue = retenueExclure(z, W, H, dxR, dy, br, zres, masque);
+    /* faces amont des pixels de brèche : produit scalaire (Δcol, −Δlig)·t < 0 */
+    for (i = 0; i < nB; i++) {
+      var b = B[i], rb = (b / W) | 0, cb = b - rb * W;
+      if (cb < W - 1 && masque[b + 1] !== M_BRECHE && br.tx < 0) ferme[b] |= 1;
+      if (cb > 0 && masque[b - 1] !== M_BRECHE && -br.tx < 0) ferme[b - 1] |= 1;
+      if (rb < H - 1 && masque[b + W] !== M_BRECHE && -br.ty < 0) ferme[b] |= 2;
+      if (rb > 0 && masque[b - W] !== M_BRECHE && br.ty < 0) ferme[b - W] |= 2;
     }
+    var Gr = new Grille(z, W, H, dxR, dy, masque, ferme), h = Gr.h;
+    Gr.n2 = N_MANNING * N_MANNING;
+    var Vres = E.V, niv = zres, airePix = function (q) { return Gr.aire[(q / W) | 0]; };
+    for (i = 0; i < nB; i++) { h[B[i]] = Math.max(0, niv - z[B[i]]); Gr.activer(B[i]); }
+    for (i = 0; i < nB; i++) Gr.voisins(B[i]);
 
-    /* ── pasCFL ── E : état → T : Courant ≤ CFL sur les nœuds mouillés,
-       célérité √(g·A/B) + |u| des faces voisines, plafonné à DT_MAX →
-       S : pas de temps (s). */
-    function pasCFL() {
-      var dt = DT_MAX;
-      for (var n = 0; n < nN; n++) {
-        if (eta[n] - bed[n] < H_SEC) continue;
-        var c = Math.sqrt(G * A[n] / Bn[n]);
-        var ul = n > 0 ? Math.abs(u[n - 1]) : 0, ur = n < nN - 1 ? Math.abs(u[n]) : 0;
-        var d = CFL * len[n] / (Math.max(ul, ur) + c);
-        if (d < dt) dt = d;
-      }
-      return dt;
-    }
-    /* ── continuite ── E : pas dt → T : débits de face Q = u·Â, Â = plus
-       petite des deux sections au niveau du nœud amont (sens de u) ;
-       paroi fermée en amont, sortie libre (ou fermée) en aval ; bilan
-       volumique des nœuds, débits moyens q̄ aux nœuds → S : débit sortant
-       (m³/s). */
-    function continuite(dt) {
-      Q[0] = 0;
-      for (var j = 0; j < nN - 1; j++) {
-        var uj = u[j];
-        if (uj === 0) { Q[j + 1] = 0; continue; }
-        var up = uj > 0 ? j : j + 1;
-        Q[j + 1] = uj * Math.min(A[up], aireA(up === j ? j + 1 : j, eta[up]));
-      }
-      Q[nN] = ouvert ? Math.max(0, u[nN - 2]) * A[nN - 1] : 0;
-      for (var n = 0; n < nN; n++) {
-        var v = Vn[n] - dt * (Q[n + 1] - Q[n]);
-        Vn[n] = v > 0 ? v : 0;
-        qb[n] = 0.5 * (Q[n] + Q[n + 1]);
-      }
-      return Q[nN];
-    }
-    /* ── mouvement ── E : pas dt, niveaux à jour → T : Stelling &
-       Duinmeijer : face sèche si max(η) − max(lit) < H_SEC ; advection
-       conservative [(q̄R·u*R − q̄L·u*L) − u·(q̄R − q̄L)] / (Ā·Δx), u* décentré
-       selon le signe de q̄ ; pente de surface g·Δη/Δx ; Manning semi-
-       implicite g·n²·|u| / R^(4/3) → S : aucune (u mis à jour). */
-    function mouvement(dt) {
-      for (var j = 0; j < nN - 1; j++) {
-        var L = j, R = j + 1, uj = u[j];
-        var hf = Math.max(eta[L], eta[R]) - Math.max(bed[L], bed[R]);
-        if (hf < H_SEC) { uNouv[j] = 0; continue; }
-        var upw = uj > 0 ? L : uj < 0 ? R : (eta[L] >= eta[R] ? L : R);
-        var Aup = Math.min(A[upw], aireA(upw === L ? R : L, eta[upw]));
-        if (Aup < 1e-6) Aup = 1e-6;
-        var Rh = Aup / Math.max(Pn[upw], 1e-6);
-        var qL = qb[L], qR = qb[R];
-        var uL = qL > 0 ? (j > 0 ? u[j - 1] : 0) : uj;
-        var uR = qR > 0 ? uj : (j < nN - 2 ? u[j + 1] : uj);
-        var Ab = 0.5 * (A[L] + A[R]);
-        var adv = Ab > 1e-6 ? ((qR * uR - qL * uL) - uj * (qR - qL)) / (Ab * dist[j]) : 0;
-        var grad = G * (eta[R] - eta[L]) / dist[j];
-        var nm = 0.5 * (nMan[L] + nMan[R]);
-        var frot = dt * G * nm * nm * Math.abs(uj) / Math.pow(Rh > 1e-3 ? Rh : 1e-3, 4 / 3);
-        uNouv[j] = (uj - dt * (adv + grad)) / (1 + frot);
-      }
-      var tmp = u; u = uNouv; uNouv = tmp;
-    }
+    var arr = new Float32Array(N).fill(-1), hMax = new Float32Array(N), vMax = new Float32Array(N);
+    var capW = 1 << 16, nW = 0, wp = new Int32Array(capW);
+    var rP = Math.floor(br.pied / W), cP = br.pied - rP * W, dxP = dxR[rP];
+    var Rmax = 0, pixFront = br.pied, frontMin = [0], frontPix = [br.pied];
+    var tDernier = 0, qMax = 0, qCour = 0, perduMer = 0, perduBord = 0, fin = '';
+    var pixM = Math.sqrt(dxP * dy);
 
-    /* intégration */
-    var t = 0, front = -1, frontMin = [0], qMax = 0, Vsortie = 0, nEnv = 0;
-    /* ── frontKm ── E : front (station) → T : abscisse curviligne depuis la
-       brèche → S : km. */
-    function frontKm() { return front < 0 ? 0 : (geo.cum[i0 + front] - geo.cum[i0]) / 1000; }
-    /* ── instant ── E : t → T : volume restant dans la retenue, débit à la
-       brèche, pixels atteints depuis le dernier envoi (indice, date, rive,
-       seuil), lames de rive courantes ; message « instant », tampons
-       transférés → S : aucune. */
+    /* clichés */
+    var snaps = [], snapT = [], nSnapTot = 0, dtCli = DT_CLICHE;
+    /* E : instant → T : lames (cm) des pixels atteints ; au-delà de
+       CLICHE_MAX lames stockées, un cliché sur deux est retiré et le pas
+       doublé → S : aucune. */
+    function cliche(t) {
+      var d = new Uint16Array(nW);
+      for (var j = 0; j < nW; j++) { var x = Math.round(h[wp[j]] * 100); d[j] = x > 65535 ? 65535 : x; }
+      snaps.push(d); snapT.push(t); nSnapTot += nW;
+      if (nSnapTot > CLICHE_MAX) {
+        var s2 = [], t2 = []; nSnapTot = 0;
+        for (var j2 = 0; j2 < snaps.length; j2 += 2) { s2.push(snaps[j2]); t2.push(snapT[j2]); nSnapTot += snaps[j2].length; }
+        snaps = s2; snapT = t2; dtCli *= 2;
+      }
+    }
+    var nEnv = 0;
+    /* E : instant → T : pixels atteints depuis le dernier envoi, lames
+       courantes (cm) de tous les pixels atteints, front, débit de brèche,
+       part restante de la retenue → S : message « instant ». */
     function instant(t) {
-      var reste = 0; for (var i = 0; i < nR; i++) reste += Vn[i];
-      var cour = new Uint16Array(M2); profondeurs(cour);
-      var mp = wp.slice(nEnv, nW), ma = new Float32Array(nW - nEnv);
-      for (i = 0; i < mp.length; i++) ma[i] = arr[mp[i]];
-      var msg = { type: 'instant', t: t, frontKm: frontKm(), q: Math.abs(Q[nR]), reste: reste / V0,
-                  p: mp, a: ma, m: wm.slice(nEnv, nW), g: wg.slice(nEnv, nW), prof: cour };
+      var mp = wp.slice(nEnv, nW), ma = new Float32Array(mp.length), pr = new Uint16Array(nW);
+      for (var j = 0; j < mp.length; j++) ma[j] = arr[mp[j]];
+      for (j = 0; j < nW; j++) { var x = Math.round(h[wp[j]] * 100); pr[j] = x > 65535 ? 65535 : x; }
       nEnv = nW;
-      envoyer(msg, [msg.p.buffer, msg.a.buffer, msg.m.buffer, msg.g.buffer, msg.prof.buffer]);
+      envoyer({ type: 'instant', t: t, frontKm: Rmax / 1000, q: qCour, reste: Math.max(0, Vres) / E.V, p: mp, a: ma, prof: pr },
+              [mp.buffer, ma.buffer, pr.buffer]);
     }
-    rives(); cliche();
-    var mesure = Date.now();
+
+    var t = 0, mesure = Date.now();
+    cliche(0);
     while (t < T_MAX) {
-      var dt = pasCFL();
-      Vsortie += dt * continuite(dt);
-      etat();
-      mouvement(dt);
+      var dt = Gr.dtCFL();
+      Gr.continuite(dt);
+      /* retenue : volume sorti par la brèche, nouveau niveau imposé */
+      var sorti = 0;
+      for (i = 0; i < nB; i++) { var bb = B[i]; sorti += (Math.max(0, niv - z[bb]) - h[bb]) * airePix(bb); }
+      Vres -= sorti; if (Vres < 0) Vres = 0;
+      niv = zf + E.h0 * Vres / E.V;
+      for (i = 0; i < nB; i++) h[B[i]] = Math.max(0, niv - z[B[i]]);
+      qCour = sorti / dt;
       t += dt;
-      if (t >= T_DEMARRAGE) { var qb0 = Math.abs(Q[nR]); if (qb0 > qMax) qMax = qb0; }
-      for (s = M - 1; s > front; s--) if (eta[nR + s] - bed[nR + s] >= H_ARRIVEE) { front = s; break; }
-      rives(); peindre(t);
-      while (nSnap * DT_CLICHE <= t) cliche();
-      while (frontMin.length * 60 <= t) frontMin.push(frontKm() * 1000);
+      if (t >= T_DEMARRAGE && qCour > qMax) qMax = qCour;
+      /* puits, arrivées, maxima, activation */
+      var nL = Gr.nL, L = Gr.L, U = Gr.U, V = Gr.V;
+      for (k = 0; k < nL; k++) {
+        p = L[k]; var hp = h[p]; if (hp <= 0) continue;
+        var mk = masque[p];
+        if (mk === M_MER || mk === M_BORD) {
+          if (mk === M_MER) { perduMer += hp * airePix(p); if (!fin) fin = 'mer'; }
+          else { perduBord += hp * airePix(p); if (!fin) fin = 'bord'; }
+          h[p] = 0; continue;
+        }
+        if (hp > H_SEC && Gr.etat[p] === 1) Gr.voisins(p);
+        if (hp >= H_ARRIVEE) {
+          if (arr[p] < 0) {
+            arr[p] = t; tDernier = t;
+            if (nW === capW) { capW *= 2; var nw = new Int32Array(capW); nw.set(wp); wp = nw; }
+            wp[nW++] = p;
+            var rr = (p / W) | 0, cc = p - rr * W, dd = Math.hypot((cc - cP) * dxP, (rr - rP) * dy);
+            if (dd > Rmax) { Rmax = dd; pixFront = p; }
+          }
+          if (hp > hMax[p]) hMax[p] = hp;
+          var rq = (p / W) | 0, cq = p - rq * W;
+          var uc = 0.5 * (U[p] + (cq > 0 ? U[p - 1] : U[p])), vc = 0.5 * (V[p] + (rq > 0 ? V[p - W] : V[p]));
+          var sp = Math.sqrt(uc * uc + vc * vc); if (sp > vMax[p]) vMax[p] = sp;
+        }
+      }
+      Gr.mouvement(dt);
+      while (frontMin.length * 60 <= t) { frontMin.push(Rmax); frontPix.push(pixFront); }
+      if (t - snapT[snapT.length - 1] >= dtCli) cliche(t);
       if (t > 600 && t - tDernier > T_CALME) break;
       if (Date.now() - mesure > DT_INSTANT_MS) { mesure = Date.now(); instant(t); }
     }
@@ -598,8 +537,7 @@ function BARRAGE_FABRIQUE() {
     var tFin = t;
 
     /* isochrones : plus petit pas de PAS_ISO, jamais inférieur au pas
-       précédent (le pas ne fait que s'allonger), donnant ≥ ECART_ISO_PX
-       pixels d'avancée du front le long de la trajectoire */
+       précédent, donnant ≥ ECART_ISO_PX pixels d'avancée du front */
     var nMin = frontMin.length - 1, choix = [], dern = 0, pasPrec = 0;
     while (dern < nMin) {
       var pris = 0;
@@ -616,10 +554,9 @@ function BARRAGE_FABRIQUE() {
     var nI = choix.length, tI = new Float64Array(nI);
     for (i = 0; i < nI; i++) tI[i] = choix[i].t;
     var seaux = []; for (i = 0; i < nI; i++) seaux.push([]);
-    for (p = 0; p < N; p++) {
-      var ap = arr[p]; if (ap < 0) continue;
-      var r = Math.floor(p / W), cc4 = p - r * W, aq = -1;
-      var vs = [r > 0 ? p - W : -1, r < H - 1 ? p + W : -1, cc4 > 0 ? p - 1 : -1, cc4 < W - 1 ? p + 1 : -1];
+    for (i = 0; i < nW; i++) {
+      p = wp[i]; var ap = arr[p], r = (p / W) | 0, c4 = p - r * W, aq = -1;
+      var vs = [r > 0 ? p - W : -1, r < H - 1 ? p + W : -1, c4 > 0 ? p - 1 : -1, c4 < W - 1 ? p + 1 : -1];
       for (var v4 = 0; v4 < 4; v4++) { var qq = vs[v4]; if (qq >= 0 && arr[qq] > ap && arr[qq] > aq) aq = arr[qq]; }
       if (aq < 0) continue;
       var lo2 = 0, hi2 = nI;
@@ -627,26 +564,56 @@ function BARRAGE_FABRIQUE() {
       for (var kI = lo2; kI < nI && tI[kI] < aq; kI++) seaux[kI].push(p);
     }
     var iso = [];
-    for (i = 0; i < nI; i++) {
-      var fm = frontMin[Math.round(tI[i] / 60)], sf = 0;
-      while (sf < M - 1 && geo.cum[i0 + sf] - geo.cum[i0] < fm) sf++;
-      iso.push({ t: tI[i], pas: choix[i].pas, trans: choix[i].trans, px: Int32Array.from(seaux[i]), lab: ch[i0 + sf] });
-    }
+    for (i = 0; i < nI; i++) iso.push({ t: tI[i], pas: choix[i].pas, trans: choix[i].trans, px: Int32Array.from(seaux[i]), lab: frontPix[Math.round(tI[i] / 60)] });
+
+    var wpF = wp.slice(0, nW), wh = new Float32Array(nW), wv = new Float32Array(nW);
+    for (i = 0; i < nW; i++) { wh[i] = hMax[wpF[i]]; wv[i] = vMax[wpF[i]]; }
+    var snapOff = new Float64Array(snaps.length + 1);
+    for (i = 0; i < snaps.length; i++) snapOff[i + 1] = snapOff[i] + snaps[i].length;
+    var snapData = new Uint16Array(snapOff[snaps.length]);
+    for (i = 0; i < snaps.length; i++) snapData.set(snaps[i], snapOff[i]);
     return {
-      arr: arr, iso: iso,
-      wp: wp.slice(0, nW), wm: wm.slice(0, nW), wg: wg.slice(0, nW),
-      snaps: snaps.slice(0, nSnap * M2), nSnap: nSnap, dtSnap: DT_CLICHE, M: M,
-      lit: Float32Array.from(lit), maxNiv: Float32Array.from(maxNiv),
+      arr: arr, iso: iso, wp: wpF, wh: wh, wv: wv,
+      snapT: Float64Array.from(snapT), snapOff: snapOff, snapData: snapData,
       info: {
-        zres: zres, zf: zf, Bd: Bd, Lres: Lres, qMax: qMax, tFin: tFin, V0: V0, Vsortie: Vsortie,
-        frontKm: (frontMin[nMin] || 0) / 1000, Vreste: Vn.reduce(function (a, b) { return a + b; }, 0),
-        frontMin: frontMin, fin: E.fin, nMouilles: nW,
-        breche: ch[i0], atteintBout: front >= M - 1, parement: parement, mode: E.mode
+        zres: zres, zf: zf, Bd: lig.Bd, nBreche: nB, qMax: qMax, tFin: tFin, V0: E.V, Vreste: Vres,
+        perduMer: perduMer, perduBord: perduBord, fin: fin, frontKm: Rmax / 1000, frontMin: frontMin,
+        nMouilles: nW, breche: br.pied, parement: br.parement, mode: E.mode,
+        nRetenue: nRetenue, manning: N_MANNING
       }
     };
   }
 
-  return { calcul: calcul };
+  /* ── essaiRitter ── E : h0 (m), longueur du bief (m), durée t (s),
+     taille de maille dx (m) → T : canal plat à parois (3 lignes, murs
+     haut et bas), retenue h0 sur la moitié gauche, sec à droite, sans
+     viscosité, intégration par le même schéma ; solution de Ritter
+     (1892) : h = 4/9 h0 au droit du barrage ; profil h = (2c0 − x/t)²/9g,
+     d'où la lame H_ARRIVEE à x = (2c0 − 3·√(g·H_ARRIVEE))·t, c0 = √(g h0)
+     → S : {hBarrage, hRitter (4/9 h0), xFront (m, dernière maille ≥
+     H_ARRIVEE), xRitter, masse (écart relatif)}. */
+  function essaiRitter(h0, Lbief, t, dx) {
+    h0 = h0 || 10; Lbief = Lbief || 20000; t = t || 60; dx = dx || 10;
+    var W = Math.round(2 * Lbief / dx), H = 3, N = W * H, z = new Float32Array(N), m = new Uint8Array(N), f = new Uint8Array(N);
+    for (var c = 0; c < W; c++) { m[c] = M_MUR; m[2 * W + c] = M_MUR; }
+    var dxR = new Float64Array(H).fill(dx), Gr = new Grille(z, W, H, dxR, dx, m, f), c0 = Math.floor(W / 2), V0 = 0;
+    for (c = 0; c < W; c++) { var p = W + c; Gr.activer(p); if (c < c0) { Gr.h[p] = h0; V0 += h0; } }
+    var sauveCS = CS_SMAG; CS_SMAG = 0;
+    var tt = 0;
+    while (tt < t) {
+      var dt = Math.min(Gr.dtCFL(), t - tt);
+      Gr.continuite(dt);
+      for (var k = 0; k < Gr.nL; k++) { var q = Gr.L[k]; if (Gr.h[q] > H_SEC && Gr.etat[q] === 1) Gr.voisins(q); }
+      Gr.mouvement(dt); tt += dt;
+    }
+    CS_SMAG = sauveCS;
+    var xf = 0, V1 = 0;
+    for (c = 0; c < W; c++) { V1 += Gr.h[W + c]; if (Gr.h[W + c] >= H_ARRIVEE) xf = (c + 0.5 - c0) * dx; }
+    return { hBarrage: 0.5 * (Gr.h[W + c0 - 1] + Gr.h[W + c0]), hRitter: 4 / 9 * h0,
+             xFront: xf, xRitter: (2 * Math.sqrt(G * h0) - 3 * Math.sqrt(G * H_ARRIVEE)) * t, masse: (V1 - V0) / V0 };
+  }
+
+  return { calcul: calcul, essaiRitter: essaiRitter };
 }
 
 /* ── BARRAGEWORKER ── lanceur : un Worker dont la source est
@@ -656,19 +623,19 @@ const BARRAGEWORKER = (function () {
   var _w = null;
 
   /* ── source ── E : aucune → T : fabrique + onmessage (calcul, messages
-     « geom », « instant » puis « fin » avec tampons transférés, « erreur »)
-     → S : texte du Worker. */
+     « instant » puis « fin » avec tampons transférés, « erreur ») → S :
+     texte du Worker. */
   function source() {
     return 'var BARRAGE=(' + BARRAGE_FABRIQUE.toString() + ')();\n' +
       'onmessage=function(e){try{var R=BARRAGE.calcul(e.data,function(m,tr){postMessage(m,tr||[]);});' +
-      'var tr=[R.arr.buffer,R.wp.buffer,R.wm.buffer,R.wg.buffer,R.snaps.buffer,R.lit.buffer,R.maxNiv.buffer];' +
+      'var tr=[R.arr.buffer,R.wp.buffer,R.wh.buffer,R.wv.buffer,R.snapT.buffer,R.snapOff.buffer,R.snapData.buffer];' +
       'R.iso.forEach(function(i){tr.push(i.px.buffer);});' +
       'postMessage({type:"fin",res:R},tr);}catch(x){postMessage({type:"erreur",msg:String(x&&x.message||x)});}};';
   }
 
-  /* ── lancer ── E : entrées de calcul, rappels message(m) (« geom »,
-     « instant »), fin(res), erreur(msg) → T : arrête un calcul en cours,
-     démarre le Worker (ou calcule sur place) → S : aucune. */
+  /* ── lancer ── E : entrées de calcul, rappels message(m) (« instant »),
+     fin(res), erreur(msg) → T : arrête un calcul en cours, démarre le
+     Worker (ou calcule sur place) → S : aucune. */
   function lancer(E, message, fin, erreur) {
     arreter();
     if (typeof Worker === 'undefined' || typeof Blob === 'undefined') {

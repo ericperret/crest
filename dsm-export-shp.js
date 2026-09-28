@@ -272,10 +272,12 @@ function shpNom(t) {
           .replace(/^_+|_+$/g, '').slice(0, 40) || 'barrage';
 }
 
-/* ── ondeShapefile ── E : {arr Float32 (s), iso, info (qMax)}, W, H,
+/* ── ondeShapefile ── E : {arr Float32 (s), iso, info (qMax), wp (pixels
+   atteints), wh, wv (lame et vitesse maximales par pixel atteint)}, W, H,
    GEO, méta {nom, V km³, h0 m} → T : tranches d'arrivée, contours,
-   surfaces, entités non vides, table (ID, T_DEB_MIN, T_FIN_MIN,
-   T_FIN_HM, PAS_MIN, SURF_HA, NB_PIX, BARRAGE, V_KM3, H0_M, Q_MAX_M3S),
+   surfaces, lame et vitesse maximales par tranche, entités non vides,
+   table (ID, T_DEB_MIN, T_FIN_MIN, T_FIN_HM, PAS_MIN, SURF_HA, NB_PIX,
+   H_MAX_M, V_MAX_MS, BARRAGE, V_KM3, H0_M, Q_MAX_M3S),
    .prj WGS84, .cpg UTF-8, ZIP → S : {blob, nom (.zip), nb (entités),
    surfHa (total)}. */
 function ondeShapefile(R, W, H, geo, meta) {
@@ -283,12 +285,18 @@ function ondeShapefile(R, W, H, geo, meta) {
   const B = shpBandes(R.arr, R.iso, N), nB = B.t1.length;
   const C = shpContours(B.lab, W, H, nB), S = shpSurfacesHa(B.lab, W, H, nB, geo);
   const hm = m => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(Math.round(m % 60)).padStart(2, '0')}`;
+  const hB = new Float64Array(nB), vB = new Float64Array(nB);
+  for (let i = 0; i < R.wp.length; i++) {
+    const b = B.lab[R.wp[i]]; if (b < 0) continue;
+    if (R.wh[i] > hB[b]) hB[b] = R.wh[i];
+    if (R.wv[i] > vB[b]) vB[b] = R.wv[i];
+  }
   const entites = [], lignes = [];
   let total = 0;
   for (let b = 0; b < nB; b++) {
     if (!C.nPix[b]) continue;
     entites.push({ anneaux: C.anneaux[b] });
-    lignes.push([entites.length, B.t0[b], B.t1[b], hm(B.t1[b]), B.pas[b], S[b], C.nPix[b],
+    lignes.push([entites.length, B.t0[b], B.t1[b], hm(B.t1[b]), B.pas[b], S[b], C.nPix[b], hB[b], vB[b],
                  meta.nom, meta.V, meta.h0, Math.round(R.info.qMax)]);
     total += S[b];
   }
@@ -296,7 +304,8 @@ function ondeShapefile(R, W, H, geo, meta) {
     { n: 'ID', t: 'N', l: 6, d: 0 }, { n: 'T_DEB_MIN', t: 'N', l: 7, d: 0 },
     { n: 'T_FIN_MIN', t: 'N', l: 7, d: 0 }, { n: 'T_FIN_HM', t: 'C', l: 6 },
     { n: 'PAS_MIN', t: 'N', l: 5, d: 0 }, { n: 'SURF_HA', t: 'N', l: 14, d: 2 },
-    { n: 'NB_PIX', t: 'N', l: 10, d: 0 }, { n: 'BARRAGE', t: 'C', l: 80 },
+    { n: 'NB_PIX', t: 'N', l: 10, d: 0 }, { n: 'H_MAX_M', t: 'N', l: 8, d: 2 },
+    { n: 'V_MAX_MS', t: 'N', l: 7, d: 2 }, { n: 'BARRAGE', t: 'C', l: 80 },
     { n: 'V_KM3', t: 'N', l: 12, d: 4 }, { n: 'H0_M', t: 'N', l: 8, d: 1 },
     { n: 'Q_MAX_M3S', t: 'N', l: 10, d: 0 }];
   const P = shpPolygones(entites, W, H, geo), base = 'onde_' + shpNom(meta.nom), enc = new TextEncoder();
