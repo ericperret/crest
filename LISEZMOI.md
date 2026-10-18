@@ -122,7 +122,7 @@ entrée lance directement la rupture de cet ouvrage.
   successifs, seul le bassin le plus aval monte), jusqu'à la mer, au bord
   de la carte ou à une cuvette fermée. Sert aussi de trajectoire de
   référence à la rupture de barrage.
-- **Lave** (à venir, voir plus bas) : éruption choisie dans une liste de cas connus, évent au point
+- **Lave** (voir plus bas) : éruption choisie dans une liste de cas connus, évent au point
   cliqué, à l'évent documenté ou saisi en WGS84 (« 37.750° N, 15.005° E ») ;
   voir plus bas.
 - **Rupture de barrage** : propose les barrages connus à moins de 30 km
@@ -210,8 +210,6 @@ Espace ou ✕ : efface.
 
 ## Clic droit : coulée de lave
 
-> ⚠ Dans ce dépôt, l'entrée **🌋 Lave** du menu est inactive (« à venir ») et le module `dsm-laves.js` n'est pas encore déposé : la section ci-dessous décrit la version en cours de développement.
-
 Le dialogue propose des éruptions connues ; chaque ligne donne la lave, le
 débit, le volume, la durée et une phrase qui guide le choix (source au
 survol). L'évent est le point cliqué, ou la position saisie en WGS84
@@ -271,7 +269,7 @@ dsm-export-shp.js      export Shapefile de l'emprise datée
 dsm-barrages-cfbr.js   grands barrages français (CFBR), cas d'essai Malpasset
 dsm-barrages-gdw.js    barrages mondiaux (Global Dam Watch v1.0)
 dsm-barrages-fao.js    barrages mondiaux complémentaires (FAO AQUASTAT)
-dsm-laves.js           éruptions connues, viscosité GRD, saisie WGS84 (pas encore déposé)
+dsm-laves.js           éruptions connues, viscosité GRD, saisie WGS84
 screenshot_dsm.png     capture du visualiseur (LISEZMOI / README)
 screenshot_map.png     capture de la carte des tuiles (LISEZMOI / README)
 malpasset-essai.png    capture du cas d'essai Malpasset (README)

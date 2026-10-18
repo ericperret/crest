@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
 <!-- ═══════════════════════════════════════════════════════════════════
-     FICHIER : dsm.html - v27/09/2026
+     FICHIER : dsm.html - v18/10/2026 (b)
      OBJET   : visualiseur de modèle numérique de terrain et simulation
                paléoclimatique d'un glacier : hypsométrie, courbes, ombres,
                insolation, température, lignes de partage, filet adaptatif,
@@ -12,6 +12,13 @@
                posés sur la carte, onde vivante, rejeu, export Shapefile) ; vidéo
                des ombres, enregistrement, profileur.
      AUTEUR  : Eric P.
+     HISTORIQUE : v18/10/2026 charte graphique AZS (palette ardoise / ambre /
+               cyan, marque AZS avec lien de retour vers www.azs.fr, polices
+               système) ; couleurs propres à chaque couche inchangées
+               v18/10/2026 (b) neige et glace invisibles pendant le glacier :
+               l'ombre lancée pour les horizons redessinait la carte sans le
+               calque glacier ; surcouche glacierSurcouche() appliquée après
+               les surcharges des modules et à chaque image d'ombre
      RELECTURE : Opus 5.5
      LICENCE : CC BY-NC 4.0 — source à citer : https://github.com/ericperret/crest/
                usage commercial interdit sauf accord écrit de l'auteur (voir LICENSE)
@@ -32,17 +39,21 @@
 
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-html,body{width:100%;height:100%;overflow:hidden;background:#0d1117;
-  color:#cdd6f4;font-family:'Segoe UI',Arial,sans-serif}
+html,body{width:100%;height:100%;overflow:hidden;background:#0e1418;
+  color:#dfe7ec;font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif}
 #topbar{position:fixed;top:0;left:0;right:0;height:42px;z-index:2000;
   display:flex;align-items:center;gap:12px;padding:0 16px;
-  background:rgba(13,17,23,.88);backdrop-filter:blur(4px);
-  border-bottom:1px solid #2a2d3d}
-#titre{font-size:.82rem;font-weight:600;color:#b4befe;white-space:nowrap;
+  background:rgba(14,20,24,.88);backdrop-filter:blur(4px);
+  border-bottom:1px solid #26343e;overflow-x:auto;scrollbar-width:none}
+#topbar::-webkit-scrollbar{display:none}
+#titre{font-size:.86rem;font-weight:700;color:#dfe7ec;letter-spacing:-.1px;white-space:nowrap;
   overflow:hidden;text-overflow:ellipsis;flex:1}
-.btn{font-size:.70rem;padding:3px 11px;border:1px solid #45475a;border-radius:4px;
-  background:#181825;color:#cdd6f4;cursor:pointer;white-space:nowrap}
-.btn:hover{background:#2a2d3d;border-color:#89b4fa}
+.btn{font-size:.70rem;padding:4px 11px;border:1px solid #33434e;border-radius:6px;
+  background:#18222a;color:#dfe7ec;cursor:pointer;white-space:nowrap;transition:border-color .15s,color .15s}
+.btn:hover{background:#26343e;border-color:#f0a63a}
+.azs{font:800 20px/1 ui-monospace,"SFMono-Regular",Menlo,Consolas,"Liberation Mono",monospace;letter-spacing:-1px;color:#f0a63a;
+  text-decoration:none;padding-right:12px;border-right:1px solid #26343e;flex:none}
+.azs:hover{color:#ffcf7a}
 .btn:disabled{opacity:.3;cursor:default}
 #btn-rec.recording{border-color:#f38ba8;color:#f38ba8}
 #btn-video.running{border-color:#a6e3a1;color:#a6e3a1}
@@ -56,109 +67,110 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0d1117;
 #btn-flux.active{border-color:#f38ba8;color:#f38ba8}
 
 #menu-clic{position:fixed;z-index:3000;display:none;flex-direction:column;gap:3px;
-  padding:5px;background:rgba(20,24,32,.95);border:1px solid #45475a;border-radius:6px}
+  padding:5px;background:rgba(24,34,42,.95);border:1px solid #33434e;border-radius:6px}
 #menu-clic .btn{text-align:left}
 #dlg-barrage{position:fixed;z-index:3000;top:60px;left:50%;transform:translateX(-50%);
   display:none;flex-direction:column;gap:4px;max-width:92vw;padding:10px;
-  background:rgba(20,24,32,.97);border:1px solid #45475a;border-radius:6px;font-size:.72rem}
-#dlg-barrage .dlg-titre{font-weight:600;color:#b4befe;margin-bottom:4px}
+  background:rgba(24,34,42,.97);border:1px solid #33434e;border-radius:6px;font-size:.72rem}
+#dlg-barrage .dlg-titre{font-weight:600;color:#dfe7ec;margin-bottom:4px}
 #dlg-barrage .dlg-ligne{text-align:left;overflow:hidden;text-overflow:ellipsis}
-#dlg-barrage .dlg-note{color:#a6adc8}
-#dlg-barrage .dlg-saisie{margin:6px 0;color:#cdd6f4}
+#dlg-barrage .dlg-note{color:#a9b7bf}
+#dlg-barrage .dlg-saisie{margin:6px 0;color:#dfe7ec}
 #onde-panel{position:absolute;left:50%;bottom:8px;transform:translateX(-50%);z-index:25;
   display:none;align-items:center;gap:6px;padding:4px 8px;font-size:.66rem;
-  background:rgba(13,17,23,.88);border:1px solid #2a2d3d;border-radius:5px}
-#onde-panel input[type=range]{width:280px;accent-color:#89b4fa}
-#onde-panel #onde-lbl{font-family:'Courier New',monospace;color:#f5e0dc;min-width:128px}
-#onde-panel select{background:#181825;color:#cdd6f4;border:1px solid #45475a;border-radius:3px;font-size:.66rem}
-#dlg-barrage input{width:70px;background:#181825;color:#cdd6f4;border:1px solid #45475a;
+  background:rgba(14,20,24,.88);border:1px solid #26343e;border-radius:5px}
+#onde-panel input[type=range]{width:280px;accent-color:#5cc8d6}
+#onde-panel #onde-lbl{font-family:ui-monospace,"SFMono-Regular",Menlo,Consolas,"Liberation Mono",monospace;color:#f5e0dc;min-width:128px}
+#onde-panel select{background:#18222a;color:#dfe7ec;border:1px solid #33434e;border-radius:3px;font-size:.66rem}
+#dlg-barrage input{width:70px;background:#18222a;color:#dfe7ec;border:1px solid #33434e;
   border-radius:3px;font-size:.72rem;padding:1px 3px}
 
 #ctrl-panel{
   width:130px;flex-shrink:0;height:100%;
   display:none;flex-direction:column;align-items:stretch;
   padding:10px 6px 8px;gap:14px;
-  background:rgba(20,24,32,.85);border:1px solid #2a2d3d;border-radius:6px}
+  background:rgba(24,34,42,.85);border:1px solid #26343e;border-radius:6px}
 #ctrl-panel.visible{display:flex}
 .ctrl-bloc{display:flex;flex-direction:column;align-items:stretch;gap:3px}
-.ctrl-label{font-size:.58rem;color:#a6adc8;letter-spacing:.06em;
+.ctrl-label{font-size:.58rem;color:#a9b7bf;letter-spacing:.06em;
   text-align:center;padding:1px 0}
 .ctrl-label.actif{color:#f9e2af;background:rgba(249,226,175,.10);
   border-radius:3px}
 .ctrl-row{display:flex;align-items:center;justify-content:space-between;gap:2px}
-.ctrl-pm{font-size:.75rem;padding:1px 6px;border:1px solid #45475a;border-radius:3px;
-  background:#181825;color:#cdd6f4;cursor:pointer;line-height:1.4;
+.ctrl-pm{font-size:.75rem;padding:1px 6px;border:1px solid #33434e;border-radius:3px;
+  background:#18222a;color:#dfe7ec;cursor:pointer;line-height:1.4;
   user-select:none;flex-shrink:0}
-.ctrl-pm:hover{background:#2a2d3d;border-color:#89b4fa}
-.ctrl-val{font-size:.78rem;font-weight:700;color:#cdd6f4;
-  text-align:center;flex:1;font-family:'Courier New',monospace;
+.ctrl-pm:hover{background:#26343e;border-color:#f0a63a}
+.ctrl-val{font-size:.78rem;font-weight:700;color:#dfe7ec;
+  text-align:center;flex:1;font-family:ui-monospace,"SFMono-Regular",Menlo,Consolas,"Liberation Mono",monospace;
   white-space:nowrap;overflow:hidden}
-.ctrl-bar-wrap{width:100%;height:8px;background:#1e2030;border-radius:4px;
+.ctrl-bar-wrap{width:100%;height:8px;background:#18222a;border-radius:4px;
   cursor:pointer;position:relative;overflow:hidden}
-.ctrl-bar-fill{height:100%;border-radius:4px;background:#585b70;
+.ctrl-bar-fill{height:100%;border-radius:4px;background:#4a5a65;
   pointer-events:none;transition:width .08s}
 #main{position:fixed;top:42px;left:0;right:0;bottom:26px;
   display:flex;flex-direction:row;align-items:center;justify-content:center;
-  gap:8px;padding:0 8px;background:#0d1117}
-#wrap{position:relative;overflow:hidden;cursor:grab;background:#141820;flex-shrink:0}
+  gap:8px;padding:0 8px;background:#0e1418}
+#wrap{position:relative;overflow:hidden;cursor:grab;background:#141c22;flex-shrink:0}
 #wrap.dragging{cursor:grabbing}
 #wrap canvas{width:100%;height:100%;display:block}
 #lmap{position:absolute;top:0;left:0;width:100%;height:100%;
   pointer-events:none;z-index:10;display:none;background:transparent}
 /* Légende cartographique du glacier (hors échelle hypsométrique) */
 #glac-leg{position:absolute;left:8px;bottom:8px;z-index:20;display:none;
-  pointer-events:none;font-size:.58rem;color:#cdd6f4;line-height:1.25;
-  background:rgba(13,17,23,.82);border:1px solid #2a2d3d;border-radius:5px;padding:6px 8px 5px}
-#glac-leg .gl-t{font-size:.56rem;letter-spacing:.08em;color:#a6adc8;margin-bottom:4px}
+  pointer-events:none;font-size:.58rem;color:#dfe7ec;line-height:1.25;
+  background:rgba(14,20,24,.82);border:1px solid #26343e;border-radius:5px;padding:6px 8px 5px}
+#glac-leg .gl-t{font-size:.56rem;letter-spacing:.08em;color:#a9b7bf;margin-bottom:4px}
 #glac-leg .gl-l{display:flex;align-items:center;gap:6px;margin:2px 0}
 #glac-leg .gl-s{width:26px;height:9px;flex-shrink:0;border:1px solid rgba(255,255,255,.25)}
 #glac-leg .gl-f{width:26px;height:0;flex-shrink:0;border-top:2px solid}
-#glac-leg .gl-n{color:#7f849c;font-size:.5rem}
+#glac-leg .gl-n{color:#8fa1ad;font-size:.5rem}
 #coords{position:absolute;top:8px;left:8px;z-index:20;
-  font-size:.65rem;font-family:'Courier New',monospace;color:#f5e0dc;
-  background:rgba(13,17,23,.78);padding:3px 9px;border-radius:4px;
+  font-size:.65rem;font-family:ui-monospace,"SFMono-Regular",Menlo,Consolas,"Liberation Mono",monospace;color:#f5e0dc;
+  background:rgba(14,20,24,.78);padding:3px 9px;border-radius:4px;
   pointer-events:none;white-space:nowrap;letter-spacing:.03em}
 #placeholder{position:absolute;inset:0;z-index:5;display:flex;
-  align-items:center;justify-content:center;color:#45475a;font-size:.85rem;
+  align-items:center;justify-content:center;color:#33434e;font-size:.85rem;
   pointer-events:none;text-align:center;padding:20px}
 #legend-panel{width:72px;flex-shrink:0;height:100%;
   display:flex;flex-direction:column;align-items:center;
   padding:10px 4px 6px;gap:4px;
-  background:rgba(20,24,32,.85);border:1px solid #2a2d3d;border-radius:6px}
-#legend-panel .leg-title{font-size:.58rem;color:#a6adc8;letter-spacing:.05em}
+  background:rgba(24,34,42,.85);border:1px solid #26343e;border-radius:6px}
+#legend-panel .leg-title{font-size:.58rem;color:#a9b7bf;letter-spacing:.05em}
 #lcv{width:60px;flex:1;display:block;border-radius:3px}
-#legend-panel .leg-unit{font-size:.55rem;color:#6c7086}
+#legend-panel .leg-unit{font-size:.55rem;color:#8fa1ad}
 #dsm-status{position:fixed;top:50px;right:8px;width:148px;z-index:1500;
   display:flex;flex-direction:column;gap:6px;padding:8px 8px 6px;
-  background:rgba(20,24,32,.9);border:1px solid #2a2d3d;border-radius:6px}
-#dsm-status .hud-titre{font-size:.52rem;color:#585b70;text-align:center;letter-spacing:.5px}
-#deltaC{width:100%;height:64px;display:block;background:#11151c;border-radius:3px}
+  background:rgba(24,34,42,.9);border:1px solid #26343e;border-radius:6px}
+#dsm-status .hud-titre{font-size:.52rem;color:#4a5a65;text-align:center;letter-spacing:.5px}
+#deltaC{width:100%;height:64px;display:block;background:#0e1418;border-radius:3px}
 #checklist{display:flex;flex-direction:column;gap:3px;padding:0 4px}
-.chk-row{display:flex;align-items:center;gap:5px;font-size:.55rem;color:#a6adc8}
-.chk-led{width:8px;height:8px;border-radius:50%;background:#313244;border:1px solid #45475a;flex-shrink:0;transition:background .3s}
+.chk-row{display:flex;align-items:center;gap:5px;font-size:.55rem;color:#a9b7bf}
+.chk-led{width:8px;height:8px;border-radius:50%;background:#26343e;border:1px solid #33434e;flex-shrink:0;transition:background .3s}
 .chk-led.on{background:#a6e3a1;border-color:#a6e3a1;box-shadow:0 0 4px #a6e3a1}
-#prof-panel{margin-top:6px;border-top:1px solid #313244;padding-top:4px}
+#prof-panel{margin-top:6px;border-top:1px solid #26343e;padding-top:4px}
 #prof-panel .prof-head{display:flex;align-items:center;justify-content:space-between;
-  font-size:.52rem;color:#585b70;letter-spacing:.5px;margin-bottom:2px}
-#prof-reset{border:1px solid #45475a;background:#181825;color:#a6adc8;border-radius:3px;
+  font-size:.52rem;color:#4a5a65;letter-spacing:.5px;margin-bottom:2px}
+#prof-reset{border:1px solid #33434e;background:#18222a;color:#a9b7bf;border-radius:3px;
   font-size:.5rem;line-height:1;padding:2px 4px;cursor:pointer}
-#prof-reset:hover{background:#2a2d3d;border-color:#89b4fa;color:#89b4fa}
-#prof-table{width:100%;border-collapse:collapse;font-family:'Courier New',monospace;font-size:.52rem}
-#prof-table td{padding:1px 0;color:#a6adc8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#prof-reset:hover{background:#26343e;border-color:#f0a63a;color:#f0a63a}
+#prof-table{width:100%;border-collapse:collapse;font-family:ui-monospace,"SFMono-Regular",Menlo,Consolas,"Liberation Mono",monospace;font-size:.52rem}
+#prof-table td{padding:1px 0;color:#a9b7bf;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #prof-table td.pf-nom{max-width:78px}
 #prof-table td.pf-pct{color:#f9e2af;text-align:right;width:30px}
-#prof-table td.pf-ms{color:#cdd6f4;text-align:right;width:44px}
+#prof-table td.pf-ms{color:#dfe7ec;text-align:right;width:44px}
 #prof-table tr.pf-lourd td.pf-pct{color:#f38ba8}
 #vbar{position:fixed;bottom:0;left:0;right:0;height:26px;z-index:2000;
   display:flex;align-items:center;padding:0 12px;gap:10px;
-  background:rgba(13,17,23,.88);border-top:1px solid #1e2030;font-size:.62rem}
+  background:rgba(14,20,24,.88);border-top:1px solid #18222a;font-size:.62rem}
 #vstatus{flex:1;color:#a6e3a1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-#vinfo{color:#45475a;white-space:nowrap}
+#vinfo{color:#33434e;white-space:nowrap}
 </style>
 </head>
 <body>
 
 <div id="topbar">
+  <a class="azs" href="https://www.azs.fr/" title="www.azs.fr">AZS</a>
   <span id="titre">DSM — En attente d'une tuile</span>
   <button class="btn" id="btn-ombre" disabled>🌑 Ombre</button>
   <button class="btn" id="btn-insol" disabled>☀️ Insol</button>
@@ -227,14 +239,14 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0d1117;
         <div class="ctrl-bar-fill" id="ctrl-fill-2" style="width:50%"></div>
       </div>
     </div>
-    <div id="ctrl-info-rise" style="margin-top:4px;font-size:.60rem;color:#585b70;text-align:center;line-height:1.6">
+    <div id="ctrl-info-rise" style="margin-top:4px;font-size:.60rem;color:#4a5a65;text-align:center;line-height:1.6">
       <span id="ctrl-rise" style="color:#fab387">🌅 --h--</span><br>
-      <span id="ctrl-set"  style="color:#89b4fa">🌇 --h--</span>
+      <span id="ctrl-set"  style="color:#5cc8d6">🌇 --h--</span>
     </div>
-    <div id="ctrl-info-sun" style="font-size:.60rem;color:#585b70;text-align:center;margin-top:2px">
+    <div id="ctrl-info-sun" style="font-size:.60rem;color:#4a5a65;text-align:center;margin-top:2px">
       <span id="ctrl-sunpos">az —°  él —°</span>
     </div>
-    <div style="font-size:.62rem;text-align:center;margin-top:2px;color:#45475a">
+    <div style="font-size:.62rem;text-align:center;margin-top:2px;color:#33434e">
       <span id="ctrl-ombre-ind">—</span>
     </div>
   </div>
@@ -250,7 +262,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0d1117;
       <div class="gl-l"><span class="gl-f" style="border-color:#00c000"></span>Front actif <span class="gl-n">glace &gt; 10 m au contact du sol libre</span></div>
       <div class="gl-l"><span class="gl-f" style="border-color:#ff0000"></span>Extension maximale atteinte <span class="gl-n">front mince ou en retrait</span></div>
       <div class="gl-l"><span class="gl-s" style="background:#8a8a8a"></span>Sol libre <span class="gl-n">ni neige ni glace (fond visible)</span></div>
-      <div class="gl-l" id="gl-flux" style="display:none"><span class="gl-s" style="border:none;background:linear-gradient(90deg,rgb(137,180,250),rgb(243,139,168))"></span>&#xc9;coulement <span class="gl-n">lent &#x2192; rapide (fl&#xe8;ches)</span></div>
+      <div class="gl-l" id="gl-flux" style="display:none"><span class="gl-s" style="border:none;background:linear-gradient(90deg,rgb(92,200,214),rgb(243,139,168))"></span>&#xc9;coulement <span class="gl-n">lent &#x2192; rapide (fl&#xe8;ches)</span></div>
       <div class="gl-n" style="margin-top:3px">Teinte = d&#xe9;cile d'&#xe9;paisseur (neige + glace)</div>
     </div>
     <div id="placeholder">Cliquez sur une tuile verte dans map.html</div>
@@ -618,7 +630,7 @@ function drawLegend() {
     const elev = vminGlobal + t*(vmaxGlobal-vminGlobal);
     const y    = barY + Math.round((1-t)*barH);
     lctx.fillStyle='rgba(180,190,210,.6)'; lctx.fillRect(barX+barW,y,4,1);
-    lctx.fillStyle='#a6adc8'; lctx.fillText(`${Math.round(elev)}`,textX+4,y+3);
+    lctx.fillStyle='#a9b7bf'; lctx.fillText(`${Math.round(elev)}`,textX+4,y+3);
   }
   if(eauNb>0&&waterLevel>vminGlobal){
     const t = Math.min(1,Math.max(0,(waterLevel-vminGlobal)/(vmaxGlobal-vminGlobal)));
@@ -1602,14 +1614,14 @@ function dessinerDeltaC() {
 
   ctx.lineWidth=1;
   if(0>=mn && 0<=mx){
-    ctx.strokeStyle='#45475a'; ctx.setLineDash([3,3]);
+    ctx.strokeStyle='#33434e'; ctx.setLineDash([3,3]);
     ctx.beginPath(); ctx.moveTo(PADL,yPix(0)); ctx.lineTo(W-PADR,yPix(0)); ctx.stroke();
     ctx.setLineDash([]);
   }
-  ctx.strokeStyle='#313244';
+  ctx.strokeStyle='#26343e';
   ctx.beginPath(); ctx.moveTo(xPix(0),PADT); ctx.lineTo(xPix(0),H-PADB); ctx.stroke();
 
-  ctx.strokeStyle='#89dceb'; ctx.lineWidth=2; ctx.beginPath();
+  ctx.strokeStyle='#5cc8d6'; ctx.lineWidth=2; ctx.beginPath();
   for(var k2=0;k2<nS;k2++){ var x=xPix(TKA_MIN+k2/(nS-1)*(TKA_MAX-TKA_MIN)), y=yPix(ys[k2]);
     if(k2===0) ctx.moveTo(x,y); else ctx.lineTo(x,y); }
   ctx.stroke();
@@ -1623,7 +1635,7 @@ function dessinerDeltaC() {
     }
   }
 
-  ctx.fillStyle='#585b70'; ctx.font='9px sans-serif';
+  ctx.fillStyle='#4a5a65'; ctx.font='9px sans-serif';
   ctx.textBaseline='bottom'; ctx.fillText(TKA_MIN+'ka', PADL+1, H-1);
   ctx.textAlign='right';     ctx.fillText('+2', W-PADR, H-1); ctx.textAlign='left';
 
@@ -1713,26 +1725,8 @@ function dsmReset() {
   document.getElementById('btn-video').disabled = true;
 }
 
-(function(){
-  var _r=render;
-  /* Calque glacier : après le rendu normal, superpose la carte neige/glace
-     et les flèches d'écoulement, affiche ou masque la légende du glacier. */
-  render=function(){
-    _r();
-    var DISP2=document.getElementById('c').width;
-    var rx=GLAC_DIM/imgW, ry=GLAC_DIM/imgH;
-    var sX=Math.round(srcX*rx), sY=Math.round(srcY*ry);
-    var sW=Math.round(DISP2*srcPPx*rx), sH=Math.round(DISP2*srcPPx*ry);
-    ctx.imageSmoothingEnabled=false;
-    if(glacierOsc) ctx.drawImage(glacierOsc,sX,sY,sW,sH,0,0,DISP2,DISP2);
-    if(fluxActif && fluxOsc) ctx.drawImage(fluxOsc,sX,sY,sW,sH,0,0,DISP2,DISP2);
-    var lg=document.getElementById('glac-leg');
-    if(lg){
-      lg.style.display = glacierOsc ? 'block' : 'none';
-      document.getElementById('gl-flux').style.display = (fluxActif && fluxOsc) ? 'flex' : 'none';
-    }
-  };
-})();
+/* Calque glacier : surcharge de render posée en fin de page, après
+   dsm-ombre.js et dsm-temp.js (voir le dernier <script>). */
 
 canvas.addEventListener('wheel',e=>{
   e.preventDefault(); if(!currentOSC()) return;
@@ -1827,7 +1821,7 @@ function syncCarto(){
 cartoBtn.addEventListener('click',()=>{
   cartoOn=!cartoOn;
   cartoBtn.textContent=cartoOn?'🗺 Carto ✓':'🗺 Carto';
-  cartoBtn.style.borderColor=cartoOn?'#89b4fa':'';
+  cartoBtn.style.borderColor=cartoOn?'#f0a63a':'';
   if(cartoOn){
     lmapEl.style.display='block';
     if(!cartoMap){
@@ -2114,6 +2108,32 @@ document.getElementById('btn-ombre').addEventListener('click', function() {
 <script src="dsm-laves.js"></script>
 <script src="dsm-barrage.js"></script>
 <script>
+/* ── glacierSurcouche ── E : glacierOsc, fluxOsc, vue courante → T :
+   superpose la carte neige/glace et les flèches d'écoulement sur ce qui
+   vient d'être dessiné, affiche ou masque la légende du glacier → S :
+   dessin sur le canvas principal. Appelée par render et par chaque image
+   de l'ombre (dsm-ombre.js), que Glacier lance pour calculer les horizons. */
+function glacierSurcouche(){
+  var DISP2=document.getElementById('c').width;
+  var rx=GLAC_DIM/imgW, ry=GLAC_DIM/imgH;
+  var sX=Math.round(srcX*rx), sY=Math.round(srcY*ry);
+  var sW=Math.round(DISP2*srcPPx*rx), sH=Math.round(DISP2*srcPPx*ry);
+  ctx.imageSmoothingEnabled=false;
+  if(glacierOsc) ctx.drawImage(glacierOsc,sX,sY,sW,sH,0,0,DISP2,DISP2);
+  if(fluxActif && fluxOsc) ctx.drawImage(fluxOsc,sX,sY,sW,sH,0,0,DISP2,DISP2);
+  var lg=document.getElementById('glac-leg');
+  if(lg){
+    lg.style.display = glacierOsc ? 'block' : 'none';
+    document.getElementById('gl-flux').style.display = (fluxActif && fluxOsc) ? 'flex' : 'none';
+  }
+}
+/* Calque glacier : surcharge de render posée après celles de dsm-ombre.js
+   et dsm-temp.js, pour couvrir tous les modes (normal, ombre, température). */
+(function(){
+  var _r=render;
+  render=function(){ _r(); glacierSurcouche(); };
+})();
+
 var PROF = { actif: true, t: Object.create(null), n: Object.create(null) };
 /* ── profWrap ── E : nom, fonction → T : enveloppe qui cumule temps et
    nombre d'appels, y compris jusqu'à la résolution d'une promesse →

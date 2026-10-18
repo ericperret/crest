@@ -119,7 +119,7 @@ failure of that dam.
 - **Tap** (Robinet): gentle filling from the clicked point (successive
   basins, only the most downstream basin rises), until the sea, the map edge
   or a closed depression. Also serves as the reference path for the dam break.
-- **Lava** (Lave, coming soon, see below): eruption chosen from a list of
+- **Lava** (Lave, see below): eruption chosen from a list of
   known cases, vent at the clicked point, at the documented vent or entered
   in WGS84 (« 37.750° N, 15.005° E »).
 - **Dam break** (Rupture de barrage): offers the known dams within 30 km
@@ -207,8 +207,6 @@ beyond. Space or ✕: clear.
 
 ## Right-click: lava flow
 
-> ⚠ In this repository, the **🌋 Lave** menu entry is inactive ("à venir", coming soon) and the `dsm-laves.js` module is not uploaded yet: the section below describes the version under development.
-
 The dialog offers known eruptions; each line gives the lava, the discharge,
 the volume, the duration and a sentence guiding the choice (source on hover).
 The vent is the clicked point, or the position entered in WGS84
@@ -268,7 +266,7 @@ dsm-export-shp.js      Shapefile export of the dated footprint
 dsm-barrages-cfbr.js   large French dams (CFBR), Malpasset test case
 dsm-barrages-gdw.js    world dams (Global Dam Watch v1.0)
 dsm-barrages-fao.js    additional world dams (FAO AQUASTAT)
-dsm-laves.js           known eruptions, GRD viscosity, WGS84 entry (not uploaded yet)
+dsm-laves.js           known eruptions, GRD viscosity, WGS84 entry
 malpasset-essai.png    screenshot of the Malpasset test case
 screenshot_dsm.png     screenshot of the viewer
 screenshot_map.png     screenshot of the tile map
