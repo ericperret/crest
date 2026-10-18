@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════════
-   FICHIER : dsm-ombre.js - v27/09/2026
+   FICHIER : dsm-ombre.js - v18/10/2026
    OBJET   : ombres portées sur la grille 1024² : horizons sur 64
              azimuts (passe 1, pool de Workers), masques d'ombre d'une
              journée (passe 2), rendu ombré et film des heures (passe 3) ;
@@ -11,13 +11,16 @@
              usage commercial interdit sauf accord écrit de l'auteur (voir LICENSE)
    DÉPEND  : dsm-astro.js (ASTRO_INJECT, orbital, sunRiseSet, sunPos),
              dsm.html (GEO, imgW, imgH, elevGrid, oscHypso, currentOSC, ctx,
-             canvas, render, vue courante, panneau ctrl*)
+             canvas, render, vue courante, panneau ctrl*, glacierSurcouche)
    EXPOSE  : ombreElev1024, ombreResX, ombreResY, ombreHorizonCopy,
              OMBRE_DIM, OMBRE_N_AZ, lancerOmbre, lancerPasse2,
              lancerPasse2Seule, stopOmbre, resetSim, placeFaucet, eauNiveau, eauTrajectoire,
              eauNb, waterLevel, …
    CONVENTIONS : azimut 0 = nord, sens horaire ; horizons en centi-degrés
              (Int16) ; heures solaires locales
+   HISTORIQUE : v18/10/2026 chaque image d'ombre redessine aussi le calque
+             glacier (glacierSurcouche de dsm.html) : la neige et la glace
+             restaient invisibles pendant une simulation Glacier
    ═══════════════════════════════════════════════════════════════════ */
 "use strict";
 
@@ -710,6 +713,7 @@ function ombreRendreFrame() {
     if (!ombreOsc) ombreOsc = new OffscreenCanvas(W, H);
     ombreOsc.getContext('2d').putImageData(imgData, 0, 0);
     ombreRedessiner();
+    if (typeof glacierSurcouche === 'function') glacierSurcouche();
 
     var elStr = ombreSunEl ? ombreSunEl[t].toFixed(1) + '° él.' : '';
     var azStr = ombreSunAz ? '  az.' + ombreSunAz[t].toFixed(1) + '°' : '';

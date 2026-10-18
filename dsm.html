@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
 <!-- ═══════════════════════════════════════════════════════════════════
-     FICHIER : dsm.html - v18/10/2026
+     FICHIER : dsm.html - v18/10/2026 (b)
      OBJET   : visualiseur de modèle numérique de terrain et simulation
                paléoclimatique d'un glacier : hypsométrie, courbes, ombres,
                insolation, température, lignes de partage, filet adaptatif,
@@ -14,6 +14,10 @@
      HISTORIQUE : v18/10/2026 charte graphique AZS (palette ardoise / ambre /
                cyan, marque AZS avec lien de retour vers www.azs.fr, polices
                système) ; couleurs propres à chaque couche inchangées
+               v18/10/2026 (b) neige et glace invisibles pendant le glacier :
+               l'ombre lancée pour les horizons redessinait la carte sans le
+               calque glacier ; surcouche glacierSurcouche() appliquée après
+               les surcharges des modules et à chaque image d'ombre
      RELECTURE : Opus 5.5
      LICENCE : CC BY-NC 4.0 — source à citer : https://github.com/ericperret/crest/
                usage commercial interdit sauf accord écrit de l'auteur (voir LICENSE)
@@ -1719,26 +1723,8 @@ function dsmReset() {
   document.getElementById('btn-video').disabled = true;
 }
 
-(function(){
-  var _r=render;
-  /* Calque glacier : après le rendu normal, superpose la carte neige/glace
-     et les flèches d'écoulement, affiche ou masque la légende du glacier. */
-  render=function(){
-    _r();
-    var DISP2=document.getElementById('c').width;
-    var rx=GLAC_DIM/imgW, ry=GLAC_DIM/imgH;
-    var sX=Math.round(srcX*rx), sY=Math.round(srcY*ry);
-    var sW=Math.round(DISP2*srcPPx*rx), sH=Math.round(DISP2*srcPPx*ry);
-    ctx.imageSmoothingEnabled=false;
-    if(glacierOsc) ctx.drawImage(glacierOsc,sX,sY,sW,sH,0,0,DISP2,DISP2);
-    if(fluxActif && fluxOsc) ctx.drawImage(fluxOsc,sX,sY,sW,sH,0,0,DISP2,DISP2);
-    var lg=document.getElementById('glac-leg');
-    if(lg){
-      lg.style.display = glacierOsc ? 'block' : 'none';
-      document.getElementById('gl-flux').style.display = (fluxActif && fluxOsc) ? 'flex' : 'none';
-    }
-  };
-})();
+/* Calque glacier : surcharge de render posée en fin de page, après
+   dsm-ombre.js et dsm-temp.js (voir le dernier <script>). */
 
 canvas.addEventListener('wheel',e=>{
   e.preventDefault(); if(!currentOSC()) return;
@@ -2119,6 +2105,32 @@ document.getElementById('btn-ombre').addEventListener('click', function() {
 <script src="dsm-export-shp.js"></script>
 <script src="dsm-barrage.js"></script>
 <script>
+/* ── glacierSurcouche ── E : glacierOsc, fluxOsc, vue courante → T :
+   superpose la carte neige/glace et les flèches d'écoulement sur ce qui
+   vient d'être dessiné, affiche ou masque la légende du glacier → S :
+   dessin sur le canvas principal. Appelée par render et par chaque image
+   de l'ombre (dsm-ombre.js), que Glacier lance pour calculer les horizons. */
+function glacierSurcouche(){
+  var DISP2=document.getElementById('c').width;
+  var rx=GLAC_DIM/imgW, ry=GLAC_DIM/imgH;
+  var sX=Math.round(srcX*rx), sY=Math.round(srcY*ry);
+  var sW=Math.round(DISP2*srcPPx*rx), sH=Math.round(DISP2*srcPPx*ry);
+  ctx.imageSmoothingEnabled=false;
+  if(glacierOsc) ctx.drawImage(glacierOsc,sX,sY,sW,sH,0,0,DISP2,DISP2);
+  if(fluxActif && fluxOsc) ctx.drawImage(fluxOsc,sX,sY,sW,sH,0,0,DISP2,DISP2);
+  var lg=document.getElementById('glac-leg');
+  if(lg){
+    lg.style.display = glacierOsc ? 'block' : 'none';
+    document.getElementById('gl-flux').style.display = (fluxActif && fluxOsc) ? 'flex' : 'none';
+  }
+}
+/* Calque glacier : surcharge de render posée après celles de dsm-ombre.js
+   et dsm-temp.js, pour couvrir tous les modes (normal, ombre, température). */
+(function(){
+  var _r=render;
+  render=function(){ _r(); glacierSurcouche(); };
+})();
+
 var PROF = { actif: true, t: Object.create(null), n: Object.create(null) };
 /* ── profWrap ── E : nom, fonction → T : enveloppe qui cumule temps et
    nombre d'appels, y compris jusqu'à la résolution d'une promesse →
