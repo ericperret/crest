@@ -8,7 +8,10 @@
              (dsm-worker-barrage.js) ; affichage
              vivant de l'onde pendant le calcul, rejeu (lecture, pause,
              curseur de temps), isochrones ; export Shapefile de
-             l'emprise maximale datée (dsm-export-shp.js) ; cas d'essai :
+             l'emprise maximale datée (dsm-export-shp.js) ; coulée de lave
+             (éruption choisie dans LAVES_CAS, évent au clic, à l'évent
+             documenté ou saisi en WGS84), même affichage, rejeu, isochrones
+             et export ; cas d'essai :
              temps d'arrivée calculés aux points de mesure de la fiche,
              comparés aux temps observés (état, console, carte).
    AUTEUR  : Eric P.
@@ -20,7 +23,8 @@
              (placeFaucet, eauTrajectoire), dsm-barrages-cfbr.js
              (BARRAGES_CFBR), dsm-barrages-gdw.js (BARRAGES_GDW),
              dsm-barrages-fao.js (BARRAGES_FAO), dsm-worker-barrage.js
-             (BARRAGEWORKER), dsm-export-shp.js (ondeShapefile)
+             (BARRAGEWORKER), dsm-export-shp.js (ondeShapefile),
+             dsm-laves.js (LAVES_CAS, laveParametres, laveLireWGS84)
    EXPOSE  : barrageDessiner, barrageArrivee, barrageEffacer
    CONVENTIONS : volumes en km³ à l'écran, m³ au calcul ; hauteur d'eau
              initiale = hauteur du barrage sur terrain naturel (retenue
@@ -69,9 +73,11 @@ function secTxt(s) {
 }
 
 /* ── dureeTxt ── E : durée (s) → T : minutes entières ; moins d'une
-   heure : « 45 min », sinon « 1 h 10 » → S : texte. */
+   heure : « 45 min », moins de deux jours « 1 h 10 », au-delà « 3 j 05 h »
+   → S : texte. */
 function dureeTxt(s) {
   const m = Math.floor(s / 60);
+  if (m >= 2880) return `${Math.floor(m / 1440)} j ${String(Math.floor(m % 1440 / 60)).padStart(2, '0')} h`;
   return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')}`;
 }
 
@@ -181,7 +187,7 @@ function menuOuvrir(x, y, col, row, site) {
   if (site) item(`🌊 Rupture : ${site.nom} — ${site.h} m — ${site.V} km³ [${site.src}]`, true,
                  () => barrageLancer(ordreBarrage(site)));
   item('💧 Robinet', true, () => placeFaucet(col, row));
-  item('🌋 Lave (à venir)', false, () => {});
+  item('🌋 Lave', true, () => laveDialogue(col, row));
   item(site ? '🌊 Autre barrage / saisie…' : '🌊 Rupture de barrage', true, () => barrageDialogue(col, row));
   menuClic.style.left = x + 'px'; menuClic.style.top = y + 'px';
   menuClic.style.display = 'flex';
@@ -439,7 +445,8 @@ function ondeMessage(m) {
   O.prof = m.prof; O.t = m.t; O.tView = m.t; O.tNorm = Math.max(60, m.t);
   document.getElementById('vstatus').textContent =
     `${barrageTitre} — t = ${dureeTxt(m.t)} — front ${m.frontKm.toFixed(1)} km — ` +
-    `Q brèche ${Math.round(m.q).toLocaleString()} m³/s — retenue ${(100 * m.reste).toFixed(0)} %`;
+    (O.lave ? `débit ${m.q.toLocaleString()} m³/s — volume restant à émettre ${(100 * m.reste).toFixed(0)} %`
+            : `Q brèche ${Math.round(m.q).toLocaleString()} m³/s — retenue ${(100 * m.reste).toFixed(0)} %`);
   ondeRafraichir();
 }
 
@@ -453,14 +460,14 @@ function ondeFin(R) {
   O.cap = Math.max(1, R.wp.length);
   O.wp = new Int32Array(O.cap); O.wa = new Float32Array(O.cap); O.lame = new Float32Array(O.cap);
   for (let i = 0; i < R.wp.length; i++) ondeAjouter(R.wp[i], R.arr[R.wp[i]]);
-  O.wh = R.wh; O.wv = R.wv;
+  O.wh = R.wh; O.wv = R.wv; O.wc = R.wc;
   O.snapT = R.snapT; O.snapOff = R.snapOff; O.snapData = R.snapData;
   O.arr = R.arr; O.iso = R.iso; O.info = R.info;
   O.enCours = false; O.tFin = R.info.tFin; O.tView = O.tFin; O.t = O.tFin;
   O.tNorm = R.iso.length ? R.iso[R.iso.length - 1].t : Math.max(60, R.info.tFin);
   essaiMesurer();
   ondeRafraichir();
-  document.getElementById('vstatus').textContent = barrageBilan() + essaiBilan();
+  document.getElementById('vstatus').textContent = O.lave ? laveBilan() : barrageBilan() + essaiBilan();
 }
 
 /* ═══ LANCEMENT ═════════════════════════════════════════════════════ */
@@ -556,7 +563,96 @@ function barrageBilan() {
   return `${barrageTitre} — brèche ${I.Bd.toFixed(0)} m — Q pointe ${Math.round(I.qMax).toLocaleString()} m³/s — ` +
          `front ${I.frontKm.toFixed(1)} km${fin} — retenue ${(100 * I.Vreste / I.V0).toFixed(0)} % à ${dureeTxt(I.tFin)} — ` +
          `${onde.iso.length} isochrones` +
+         (I.boue ? ` — grains pris ${Math.round(I.boue.Vero).toLocaleString()} m³, déposés ${Math.round(I.boue.Vdep).toLocaleString()} m³` : "") +
          (I.mode === 'bib' && !I.parement ? ' — parement non repéré : pied au point bas à moins de 6 h0' : '');
+}
+
+/* ═══ LAVE ══════════════════════════════════════════════════════════ */
+
+/* ── wgs84Txt ── E : lat, lon (°) → T : 5 décimales, hémisphères → S :
+   « 37.75000° N, 15.00500° E ». */
+function wgs84Txt(lat, lon) {
+  return `${Math.abs(lat).toFixed(5)}° ${lat >= 0 ? 'N' : 'S'}, ${Math.abs(lon).toFixed(5)}° ${lon >= 0 ? 'E' : 'O'}`;
+}
+
+/* ── laveDialogue ── E : pixel du clic → T : champ WGS84 prérempli au
+   clic ; une ligne par éruption connue (nom, lave, débit, volume, durée,
+   explication, source ; bouton d'évent documenté s'il existe) ; clic sur
+   une éruption : lancement à l'évent du champ → S : dialogue affiché. */
+function laveDialogue(col, row) {
+  if (!GEO || typeof LAVES_CAS === 'undefined') return;
+  const lat = GEO.latMax - (row + 0.5) / imgH * (GEO.latMax - GEO.latMin);
+  const lon = GEO.lonMin + (col + 0.5) / imgW * (GEO.lonMax - GEO.lonMin);
+  dlgBarrage.innerHTML = '';
+  const titre = document.createElement('div');
+  titre.className = 'dlg-titre'; titre.textContent = 'Coulée de lave — éruption connue (cas pire : débit de pointe jusqu\u2019à épuisement du volume)';
+  dlgBarrage.appendChild(titre);
+  const saisie = document.createElement('div'); saisie.className = 'dlg-saisie';
+  saisie.innerHTML = 'Évent WGS84 (EPSG:4326) : <input id="dlg-wgs" type="text" style="width:230px">';
+  dlgBarrage.appendChild(saisie);
+  const champ = saisie.querySelector('#dlg-wgs'); champ.value = wgs84Txt(lat, lon);
+  LAVES_CAS.forEach(c => {
+    const bt = document.createElement('button');
+    bt.className = 'btn dlg-ligne';
+    bt.textContent = `${c.nom} — ${c.type} — ${c.Q} m³/s, ${(c.V / 1e6).toLocaleString()} Mm³, ${dureeTxt(c.V / c.Q)}`;
+    bt.title = c.src;
+    bt.onclick = () => {
+      const v = laveLireWGS84(champ.value);
+      if (!v) { champ.style.borderColor = '#f38ba8'; return; }
+      dlgFermer(); laveLancer(c, v.lat, v.lon);
+    };
+    dlgBarrage.appendChild(bt);
+    const n = document.createElement('div'); n.className = 'dlg-note'; n.textContent = c.note;
+    if (c.vent) {
+      const ev = document.createElement('button'); ev.className = 'btn';
+      ev.textContent = `📍 évent documenté ${wgs84Txt(c.vent.lat, c.vent.lon)}`; ev.title = c.vent.note;
+      ev.onclick = () => { champ.value = wgs84Txt(c.vent.lat, c.vent.lon); champ.style.borderColor = ''; };
+      n.appendChild(document.createElement('br')); n.appendChild(ev);
+    }
+    dlgBarrage.appendChild(n);
+  });
+  const ann = document.createElement('button'); ann.className = 'btn'; ann.textContent = 'Annuler';
+  ann.onclick = dlgFermer;
+  dlgBarrage.appendChild(ann);
+  dlgBarrage.style.display = 'flex';
+}
+
+/* ── laveLancer ── E : éruption de LAVES_CAS, évent (lat, lon °) → T :
+   pixel de l'évent (hors tuile, mer ou sans donnée : refus écrit),
+   paramètres de coulée (laveParametres), pas des pixels depuis GEO,
+   copie du DSM transférée au Worker, onde vivante → S : aucune. */
+function laveLancer(c, lat, lon) {
+  barrageEffacer();
+  const st = document.getElementById('vstatus');
+  const g = geoVersPixel(lat, lon), col = Math.floor(g.col), row = Math.floor(g.row);
+  if (col < 1 || col >= imgW - 1 || row < 1 || row >= imgH - 1) { st.textContent = 'Évent hors de la tuile'; return; }
+  const z0 = elevGrid[row * imgW + col];
+  if (!(z0 > 0.5 && z0 < 9000)) { st.textContent = 'Évent en mer ou sans donnée'; return; }
+  const L = laveParametres(c);
+  barrageSite = row * imgW + col;
+  barrageTitre = `Lave ${c.nom} — ${c.Q} m³/s, ${(c.V / 1e6).toLocaleString()} Mm³, évent ${Math.round(z0)} m`;
+  barrageMeta = { nom: 'Lave ' + c.nom, V: c.V / 1e9, h0: 0 };
+  const dLat = (GEO.latMax - GEO.latMin) / imgH, dLon = (GEO.lonMax - GEO.lonMin) / imgW;
+  const dxR = new Float64Array(imgH);
+  for (let r = 0; r < imgH; r++) dxR[r] = 111320 * Math.cos((GEO.latMax - (r + 0.5) * dLat) * Math.PI / 180) * dLon;
+  const E = { elev: elevGrid.slice(), W: imgW, H: imgH, dy: 111320 * dLat, dxR: dxR, vent: barrageSite, lave: L };
+  onde = ondeNouvelle(); onde.lave = true;
+  onde.vitesse = +document.getElementById('onde-v').value;
+  ondePanneauMaj();
+  st.textContent = `${barrageTitre} — coulée…`;
+  render();
+  BARRAGEWORKER.lancer(E, ondeMessage, ondeFin,
+    msg => { barrageEffacer(); st.textContent = `${barrageTitre} — erreur : ${msg}`; });
+}
+
+/* ── laveBilan ── E : coulée terminée → T : portée du front, volumes émis,
+   figé, encore fluide, entré en mer ou sorti de la carte, durée → S :
+   texte d'état. */
+function laveBilan() {
+  const I = onde.info, M = v => (v / 1e6).toFixed(1);
+  const fin = { mer: ' — atteint la mer', bord: ' — sort de la carte' }[I.fin] || '';
+  return `${barrageTitre} — front ${I.frontKm.toFixed(2)} km${fin} — émis ${M(I.Vemis)} Mm³ : figé ${M(I.Vfig)}, ` +
+         `fluide ${M(I.Vliq)}, mer ${M(I.perduMer)}, bord ${M(I.perduBord)} — ${dureeTxt(I.tFin)} — ${onde.iso.length} isochrones`;
 }
 
 /* ═══ DESSIN ════════════════════════════════════════════════════════ */
@@ -652,7 +748,8 @@ canvas.addEventListener('mousemove', e => {
     if (col >= 0 && col < imgW && row >= 0 && row < imgH) {
       const i = onde.iWet[row * imgW + col];
       if (i >= 0 && onde.wa[i] <= onde.tView) txt += `  h ${onde.lame[i].toFixed(1)} m`;
-      if (i >= 0 && onde.wh) txt += ` (max ${onde.wh[i].toFixed(1)} m, ${onde.wv[i].toFixed(1)} m/s)`;
+      if (i >= 0 && onde.wh) txt += ` (max ${onde.wh[i].toFixed(1)} m, ${onde.wv[i].toFixed(1)} m/s` +
+        (onde.wc ? `, C ${(100 * onde.wc[i]).toFixed(1)} %` : "") + ")";
     }
   }
   if (txt) coordEl.textContent += txt;

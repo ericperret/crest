@@ -1,6 +1,8 @@
 /* ═══════════════════════════════════════════════════════════════════
    FICHIER : dsm-worker-barrage.js - v27/09/2026
-   OBJET   : onde de rupture instantanée d'un barrage sur la grille du DSM :
+   OBJET   : coulée de lave (calculLave : film mince de Bingham, thermo-
+             rhéologie FLOWGO, figeage, voir le bloc COULÉE DE LAVE) et
+             onde de rupture instantanée d'un barrage sur la grille du DSM :
              hauteur d'eau h et vitesse (u, v) en chaque pixel et à chaque
              instant, au-dessus du relief z ; datation de l'arrivée du
              front pixel par pixel, lame et vitesse maximales, isochrones ;
@@ -14,7 +16,8 @@
    LICENCE : CC BY-NC 4.0 — source à citer : https://github.com/ericperret/crest/
              usage commercial interdit sauf accord écrit de l'auteur (voir LICENSE)
    DÉPEND  : aucune (données reçues par message)
-   EXPOSE  : BARRAGE_FABRIQUE, BARRAGEWORKER { lancer, arreter }
+   EXPOSE  : BARRAGE_FABRIQUE { calcul (onde ou lave selon E.lave),
+             essaiRitter, essaiHuppert }, BARRAGEWORKER { lancer, arreter }
    MESSAGES : « instant » {t, frontKm, q, reste, p, a, prof} ; « fin » {res} ;
              « erreur » {msg}.
    MODÈLES (publiés, aucun paramètre ajusté) :
@@ -49,6 +52,23 @@
        aux pixels de brèche, débit sortant calculé par le schéma ; seul
        l'aval est modélisé : la retenue (cas pire conventionnel zf + h0)
        est hors domaine, sa surface au MNT n'intervient pas ;
+     · charge solide (Takahashi 2007, « Debris Flow : Mechanics,
+       Prediction and Countermeasures », CRC ; formulation 2D de
+       Nakatani et al. 2008, Kanako 2D, IJECE 1:62-72) : volume de grains
+       par unité d'aire S = C·h transporté avec l'eau (flux amont) ;
+       concentration d'équilibre C∞ selon la pente de la surface
+       tan θ : lave pierreuse ρ·tanθ/((σ−ρ)(tanφ−tanθ)) au-delà de
+       0,138, lave immature 6,7·(idem)² de 0,03 à 0,138, charriage
+       (1+5tanθ)·tanθ/(σ/ρ−1)·(1−α0²·τ*c/τ*)(1−α0·√(τ*c/τ*)) en deçà,
+       τ*c = 0,04·10^(1,72 tanθ), 0,9·C* au-delà de tanφ ; érosion
+       i = δe·(C∞−C)/(C*−C∞)·|V|·h/d, dépôt i = δd·(C∞−C)/C*·|V|,
+       δe = 0,0007, δd = 0,05 ; ravinement non traité : ni le relief ni
+       la lame ne changent, seule la composition de la lame évolue ;
+       résistance de la lave (C ≥ 0,4·C* : |V|·d²/(8h³·(C+(1−C)ρ/σ)·
+       ((C* ÷ C)^(1/3)−1)²) ; 0,01 ≤ C < 0,4·C* : |V|·d²/(0,49·h³)),
+       jamais inférieure à celle de l'eau claire (Manning) : elle ne
+       croît qu'en lame mince, au front et sur les bords ; d = 0,10 m,
+       σ = 2650, ρ = 1000 kg/m³, C* = 0,6, tanφ = 0,7 ;
      · parement aval de digue : pente plus raide que 1/5 (talus 2H/1V à
        4H/1V, USBR 1987, Design of Small Dams, ch. 6) ; embase ≤ 6 h0 ;
      · validation : essaiRitter() compare le schéma à la solution exacte
@@ -85,6 +105,13 @@ function BARRAGE_FABRIQUE() {
   var L_LIGNE_MAX = 20000;    /* m : demi-longueur maximale de la ligne de digue */
   var M_MUR = 1, M_MER = 2, M_BORD = 3, M_BRECHE = 4;
   var N_MANNING = 0.020;      /* s·m^(-1/3) : sol nu */
+  var D_GRAIN = 0.10;         /* m : diamètre représentatif du sol nu */
+  var SIGMA = 2650, RHO = 1000;   /* kg/m³ : grains, eau */
+  var C_ETOILE = 0.6;         /* concentration du lit (Kanako) */
+  var TAN_PHI = 0.7;          /* frottement interne, φ ≈ 35° */
+  var DELTA_E = 0.0007, DELTA_D = 0.05;   /* Takahashi 2007 */
+  var C_EAU = 0.01;           /* sous ce seuil : écoulement d'eau */
+  var C_PLAFOND = 0.9 * C_ETOILE;
 
   /* ── geometrieChemin ── E : chemin (pixels), W, dx, dy → T : positions
      (m, y vers le nord), distances cumulées, tangente lissée sur
@@ -229,6 +256,12 @@ function BARRAGE_FABRIQUE() {
     }
     this.nuMax = 0;
     this.n2 = 0;                            /* n² de Manning (0 : sans frottement) */
+    this.boue = false;                      /* charge solide active */
+    this.S = new Float64Array(N);           /* volume de grains par unité d'aire (m) */
+    this.C = new Float32Array(N);           /* concentration volumique */
+    this.cMax = new Float32Array(N);
+    this.Vero = 0; this.Vdep = 0;           /* m³ de grains pris et déposés */
+    this.Vsortie = 0;                       /* m³ de grains sortis (mer, bords, brèche) */
   }
   /* E : pixel → T : ajout à la liste active (doublement) → S : aucune. */
   Grille.prototype.activer = function (p) {
@@ -311,6 +344,18 @@ function BARRAGE_FABRIQUE() {
       if (QX[p] > 0) QX[p] *= fac[p]; else if (QX[p] < 0) QX[p] *= fac[p + 1];
       if (QY[p] > 0) QY[p] *= fac[p]; else if (QY[p] < 0) QY[p] *= fac[p + W];
     }
+    var S = this.S, C = this.C, boue = this.boue;
+    if (boue) {
+      /* flux de grains = flux d'eau × concentration du pixel amont */
+      for (k = 0; k < nL; k++) {
+        p = L[k]; r = (p / W) | 0; c = p - r * W;
+        var qe = QX[p], qs = QY[p];
+        var bs = -qe * (qe > 0 ? C[p] : C[p + 1]) * dy - qs * (qs > 0 ? C[p] : C[p + W]) * this.wS[r];
+        if (c > 0) { var qw = QX[p - 1]; bs += qw * (qw > 0 ? C[p - 1] : C[p]) * dy; }
+        if (r > 0) { var qn = QY[p - W]; bs += qn * (qn > 0 ? C[p - W] : C[p]) * this.wS[r - 1]; }
+        fac[p] = bs;
+      }
+    }
     for (k = 0; k < nL; k++) {
       p = L[k]; r = (p / W) | 0; c = p - r * W;
       var bil = -QX[p] * dy - QY[p] * this.wS[r];
@@ -318,7 +363,72 @@ function BARRAGE_FABRIQUE() {
       if (r > 0) bil += QY[p - W] * this.wS[r - 1];
       var hn = h[p] + dt * bil / this.aire[r];
       h[p] = hn > 0 ? hn : 0;
+      if (boue) {
+        var sn = S[p] + dt * fac[p] / this.aire[r];
+        if (h[p] <= H_SEC) { if (sn > 0) this.Vdep += sn * this.aire[r]; S[p] = 0; C[p] = 0; }
+        else { S[p] = sn > 0 ? sn : 0; C[p] = Math.min(S[p] / h[p], C_PLAFOND); }
+      }
     }
+  };
+
+  /* ── cEquilibre ── E : pente de la surface tan θ, lame h → T : régime
+     de Takahashi (2007) : au-delà de tanφ 0,9·C* ; lave pierreuse ;
+     lave immature ; charriage (Ashida-Michiue) ; rien sous le seuil
+     τ*c → S : concentration d'équilibre C∞. */
+  function cEquilibre(t, h) {
+    if (t >= TAN_PHI) return C_PLAFOND;
+    var x = RHO * t / ((SIGMA - RHO) * (TAN_PHI - t));
+    if (t > 0.138) return Math.min(C_PLAFOND, x);
+    if (t > 0.03) return 6.7 * x * x;
+    if (t <= 0) return 0;
+    var ts = RHO * h * t / ((SIGMA - RHO) * D_GRAIN), tc = 0.04 * Math.pow(10, 1.72 * t);
+    if (ts <= tc) return 0;
+    var a = SIGMA * t / (SIGMA - RHO), a02 = 2 * (0.425 - a) / (1 - a), q = a02 * tc / ts;
+    return Math.max(0, (1 + 5 * t) * t / (SIGMA / RHO - 1) * (1 - q) * (1 - Math.sqrt(q)));
+  }
+
+  /* ── echange ── E : dt, état après continuité → T : pour chaque pixel
+     mouillé hors puits et brèche : pente de la surface (différences
+     centrées, voisin sec ou mur remplacé par le pixel), vitesse au
+     centre, C∞ ; érosion vers C∞ si C < C∞, dépôt vers C∞ sinon, sans
+     dépasser C∞ ; lame et relief inchangés → S : S, C, cMax, Vero,
+     Vdep à jour. */
+  Grille.prototype.echange = function (dt) {
+    if (!this.boue) return;
+    var W = this.W, H = this.H, z = this.z, h = this.h, U = this.U, V = this.V, S = this.S, C = this.C, m = this.m;
+    for (var k = 0; k < this.nL; k++) {
+      var p = this.L[k], hp = h[p]; if (hp <= H_SEC || m[p] !== 0) continue;
+      var r = (p / W) | 0, c = p - r * W, dx = this.dxR[r], ep = z[p] + hp;
+      var q = p + 1, eE = (c < W - 1 && h[q] > H_SEC && m[q] !== M_MUR) ? z[q] + h[q] : ep;
+      q = p - 1; var eW = (c > 0 && h[q] > H_SEC && m[q] !== M_MUR) ? z[q] + h[q] : ep;
+      q = p + W; var eS = (r < H - 1 && h[q] > H_SEC && m[q] !== M_MUR) ? z[q] + h[q] : ep;
+      q = p - W; var eN = (r > 0 && h[q] > H_SEC && m[q] !== M_MUR) ? z[q] + h[q] : ep;
+      var gx = (eE - eW) / (2 * dx), gy = (eS - eN) / (2 * this.dy);
+      var uc = 0.5 * (U[p] + (c > 0 ? U[p - 1] : U[p])), vc = 0.5 * (V[p] + (r > 0 ? V[p - W] : V[p]));
+      var vit = Math.sqrt(uc * uc + vc * vc); if (vit === 0) continue;
+      var ce = cEquilibre(Math.sqrt(gx * gx + gy * gy), hp), cp = S[p] / hp, sn;
+      if (cp < ce) sn = Math.min(S[p] + dt * DELTA_E * (ce - cp) / (C_ETOILE - ce) * vit * hp / D_GRAIN * C_ETOILE, ce * hp);
+      else sn = Math.max(S[p] + dt * DELTA_D * (ce - cp) * vit, ce * hp);
+      var dS = (sn - S[p]) * this.aire[r];
+      if (dS > 0) this.Vero += dS; else this.Vdep -= dS;
+      S[p] = sn; C[p] = Math.min(sn / hp, C_PLAFOND);
+      if (C[p] > this.cMax[p]) this.cMax[p] = C[p];
+    }
+  };
+
+  /* ── frottement ── E : lame de face ĥ, vitesse |V|, concentration de
+     face → T : coefficient a de la décélération a·u : Manning g·n²·|V|/ĥ^(4/3) ;
+     lave pierreuse ou immature de Takahashi selon C ; le plus fort des
+     deux → S : a (1/s). */
+  Grille.prototype.frottement = function (hf, vit, cf) {
+    var a = G * this.n2 * vit / Math.pow(hf, 4 / 3);
+    if (cf < C_EAU) return a;
+    var d2h3 = D_GRAIN * D_GRAIN / (hf * hf * hf), ad;
+    if (cf >= 0.4 * C_ETOILE) {
+      var e = Math.cbrt(C_ETOILE / cf) - 1;
+      ad = vit * d2h3 / (8 * (cf + (1 - cf) * RHO / SIGMA) * e * e);
+    } else ad = vit * d2h3 / 0.49;
+    return ad > a ? ad : a;
   };
 
   /* ── mouvement ── E : dt, h et flux de ce pas → T : pour chaque face
@@ -366,7 +476,7 @@ function BARRAGE_FABRIQUE() {
           Un[p] = u - dt * (adv + G * (zq - zp) / dx - nu * lap);
           if (this.n2 > 0) {
             var hfx = Math.max(zp, zq) - Math.max(z[p], z[q]), vtx = 0.5 * (vcp + vcq);
-            Un[p] /= 1 + dt * G * this.n2 * Math.sqrt(u * u + vtx * vtx) / Math.pow(hfx, 4 / 3);
+            Un[p] /= 1 + dt * this.frottement(hfx, Math.sqrt(u * u + vtx * vtx), 0.5 * (this.C[p] + this.C[q]));
           }
         }
       }
@@ -400,7 +510,7 @@ function BARRAGE_FABRIQUE() {
           Vn[p] = v - dt * (adv2 + G * (zs - zp2) / dy - nu2 * lap2);
           if (this.n2 > 0) {
             var hfy = Math.max(zp2, zs) - Math.max(z[p], z[s]), uty = 0.5 * (ucp + ucs);
-            Vn[p] /= 1 + dt * G * this.n2 * Math.sqrt(v * v + uty * uty) / Math.pow(hfy, 4 / 3);
+            Vn[p] /= 1 + dt * this.frottement(hfy, Math.sqrt(v * v + uty * uty), 0.5 * (this.C[p] + this.C[s]));
           }
         }
       }
@@ -409,6 +519,55 @@ function BARRAGE_FABRIQUE() {
     var t2 = this.V; this.V = Vn; this.Vn = t2;
     this.nuMax = nuMax;
   };
+
+  /* ── isochrones ── E : dates d'arrivée arr (s), pixels atteints wp[0..nW),
+     W, H, portée du front minute par minute frontMin (m) et pixel du front
+     frontPix, taille de pixel pixM (m), pas permis (min, croissants) → T :
+     plus petit pas, jamais inférieur au pas précédent, donnant au moins
+     ECART_ISO_PX pixels d'avancée du front (sinon le plus grand) ; un
+     pixel atteint borde l'isochrone t si un voisin est atteint après t
+     et lui avant → S : [{t (s), pas (min), trans (changement de pas),
+     px Int32 (pixels du front), lab (pixel de l'étiquette)}]. */
+  function isochrones(arr, wp, nW, W, H, frontMin, frontPix, pixM, pasIso) {
+    var nMin = frontMin.length - 1, choix = [], dern = 0, pasPrec = 0, i;
+    while (dern < nMin) {
+      var pris = 0;
+      for (var k2 = 0; k2 < pasIso.length; k2++) {
+        if (pasIso[k2] < pasPrec) continue;
+        var cand = dern + pasIso[k2]; if (cand > nMin) break;
+        if ((frontMin[cand] - frontMin[dern]) / pixM >= ECART_ISO_PX) { pris = pasIso[k2]; break; }
+      }
+      if (!pris) { pris = pasIso[pasIso.length - 1]; if (dern + pris > nMin) break; }
+      dern += pris;
+      choix.push({ t: dern * 60, pas: pris, trans: pris !== pasPrec });
+      pasPrec = pris;
+    }
+    var nI = choix.length, tI = new Float64Array(nI);
+    for (i = 0; i < nI; i++) tI[i] = choix[i].t;
+    var seaux = []; for (i = 0; i < nI; i++) seaux.push([]);
+    for (i = 0; i < nW; i++) {
+      var p = wp[i], ap = arr[p], r = (p / W) | 0, c4 = p - r * W, aq = -1;
+      var vs = [r > 0 ? p - W : -1, r < H - 1 ? p + W : -1, c4 > 0 ? p - 1 : -1, c4 < W - 1 ? p + 1 : -1];
+      for (var v4 = 0; v4 < 4; v4++) { var qq = vs[v4]; if (qq >= 0 && arr[qq] > ap && arr[qq] > aq) aq = arr[qq]; }
+      if (aq < 0) continue;
+      var lo2 = 0, hi2 = nI;
+      while (lo2 < hi2) { var mi2 = (lo2 + hi2) >> 1; if (tI[mi2] < ap) lo2 = mi2 + 1; else hi2 = mi2; }
+      for (var kI = lo2; kI < nI && tI[kI] < aq; kI++) seaux[kI].push(p);
+    }
+    var iso = [];
+    for (i = 0; i < nI; i++) iso.push({ t: tI[i], pas: choix[i].pas, trans: choix[i].trans, px: Int32Array.from(seaux[i]), lab: frontPix[Math.min(frontPix.length - 1, Math.round(tI[i] / 60))] });
+    return iso;
+  }
+
+  /* ── clichesPaquet ── E : clichés [Uint16Array] → T : concaténation et
+     table des débuts → S : {snapOff Float64, snapData Uint16}. */
+  function clichesPaquet(snaps) {
+    var snapOff = new Float64Array(snaps.length + 1), i;
+    for (i = 0; i < snaps.length; i++) snapOff[i + 1] = snapOff[i] + snaps[i].length;
+    var snapData = new Uint16Array(snapOff[snaps.length]);
+    for (i = 0; i < snaps.length; i++) snapData.set(snaps[i], snapOff[i]);
+    return { snapOff: snapOff, snapData: snapData };
+  }
 
   /* ── calcul ── E : {elev, W, H, dy, dxR (m par ligne), chemin (robinet,
      sert à trouver le pied), fin, mode ('bib'|'manuel'), V (m³), h0 (m),
@@ -423,9 +582,11 @@ function BARRAGE_FABRIQUE() {
      (pas de 1 min allongé tant que le front avance de moins de
      ECART_ISO_PX pixels) → S : {arr Float32 (s, −1 sec), iso [{t, pas, px,
      lab, trans}], wp (pixels atteints, ordre d'arrivée), wh, wv (lame et
-     vitesse maximales), snapT, snapOff, snapData (lames en cm), info} ;
+     vitesse maximales), wc (concentration maximale), snapT, snapOff,
+     snapData (lames en cm), info} ; charge solide (echange) à chaque pas ;
      frottement de Manning N_MANNING sur toute la grille. */
   function calcul(E, envoyer) {
+    if (E.lave) return calculLave(E, envoyer);
     var z = E.elev, W = E.W, H = E.H, dy = E.dy, dxR = E.dxR, N = W * H, p, i, k;
     var br = brecheLocaliser({ elev: z, W: W, dx: dxR[Math.floor(H / 2)], dy: dy, chemin: E.chemin, mode: E.mode, h0: E.h0 });
     var zf = br.zf, zres = zf + E.h0;
@@ -449,6 +610,7 @@ function BARRAGE_FABRIQUE() {
     }
     var Gr = new Grille(z, W, H, dxR, dy, masque, ferme), h = Gr.h;
     Gr.n2 = N_MANNING * N_MANNING;
+    Gr.boue = true;
     var Vres = E.V, niv = zres, airePix = function (q) { return Gr.aire[(q / W) | 0]; };
     for (i = 0; i < nB; i++) { h[B[i]] = Math.max(0, niv - z[B[i]]); Gr.activer(B[i]); }
     for (i = 0; i < nB; i++) Gr.voisins(B[i]);
@@ -498,7 +660,7 @@ function BARRAGE_FABRIQUE() {
       for (i = 0; i < nB; i++) { var bb = B[i]; sorti += (Math.max(0, niv - z[bb]) - h[bb]) * airePix(bb); }
       Vres -= sorti; if (Vres < 0) Vres = 0;
       niv = zf + E.h0 * Vres / E.V;
-      for (i = 0; i < nB; i++) h[B[i]] = Math.max(0, niv - z[B[i]]);
+      for (i = 0; i < nB; i++) { h[B[i]] = Math.max(0, niv - z[B[i]]); Gr.Vsortie += Gr.S[B[i]] * airePix(B[i]); Gr.S[B[i]] = 0; Gr.C[B[i]] = 0; }
       qCour = sorti / dt;
       t += dt;
       if (t >= T_DEMARRAGE && qCour > qMax) qMax = qCour;
@@ -510,7 +672,7 @@ function BARRAGE_FABRIQUE() {
         if (mk === M_MER || mk === M_BORD) {
           if (mk === M_MER) { perduMer += hp * airePix(p); if (!fin) fin = 'mer'; }
           else { perduBord += hp * airePix(p); if (!fin) fin = 'bord'; }
-          h[p] = 0; continue;
+          h[p] = 0; Gr.Vsortie += Gr.S[p] * airePix(p); Gr.S[p] = 0; Gr.C[p] = 0; continue;
         }
         if (hp > H_SEC && Gr.etat[p] === 1) Gr.voisins(p);
         if (hp >= H_ARRIVEE) {
@@ -527,6 +689,7 @@ function BARRAGE_FABRIQUE() {
           var sp = Math.sqrt(uc * uc + vc * vc); if (sp > vMax[p]) vMax[p] = sp;
         }
       }
+      Gr.echange(dt);
       Gr.mouvement(dt);
       while (frontMin.length * 60 <= t) { frontMin.push(Rmax); frontPix.push(pixFront); }
       if (t - snapT[snapT.length - 1] >= dtCli) cliche(t);
@@ -536,52 +699,379 @@ function BARRAGE_FABRIQUE() {
     instant(t);
     var tFin = t;
 
-    /* isochrones : plus petit pas de PAS_ISO, jamais inférieur au pas
-       précédent, donnant ≥ ECART_ISO_PX pixels d'avancée du front */
-    var nMin = frontMin.length - 1, choix = [], dern = 0, pasPrec = 0;
-    while (dern < nMin) {
-      var pris = 0;
-      for (var k2 = 0; k2 < PAS_ISO.length; k2++) {
-        if (PAS_ISO[k2] < pasPrec) continue;
-        var cand = dern + PAS_ISO[k2]; if (cand > nMin) break;
-        if ((frontMin[cand] - frontMin[dern]) / pixM >= ECART_ISO_PX) { pris = PAS_ISO[k2]; break; }
-      }
-      if (!pris) { pris = PAS_ISO[PAS_ISO.length - 1]; if (dern + pris > nMin) break; }
-      dern += pris;
-      choix.push({ t: dern * 60, pas: pris, trans: pris !== pasPrec });
-      pasPrec = pris;
-    }
-    var nI = choix.length, tI = new Float64Array(nI);
-    for (i = 0; i < nI; i++) tI[i] = choix[i].t;
-    var seaux = []; for (i = 0; i < nI; i++) seaux.push([]);
-    for (i = 0; i < nW; i++) {
-      p = wp[i]; var ap = arr[p], r = (p / W) | 0, c4 = p - r * W, aq = -1;
-      var vs = [r > 0 ? p - W : -1, r < H - 1 ? p + W : -1, c4 > 0 ? p - 1 : -1, c4 < W - 1 ? p + 1 : -1];
-      for (var v4 = 0; v4 < 4; v4++) { var qq = vs[v4]; if (qq >= 0 && arr[qq] > ap && arr[qq] > aq) aq = arr[qq]; }
-      if (aq < 0) continue;
-      var lo2 = 0, hi2 = nI;
-      while (lo2 < hi2) { var mi2 = (lo2 + hi2) >> 1; if (tI[mi2] < ap) lo2 = mi2 + 1; else hi2 = mi2; }
-      for (var kI = lo2; kI < nI && tI[kI] < aq; kI++) seaux[kI].push(p);
-    }
-    var iso = [];
-    for (i = 0; i < nI; i++) iso.push({ t: tI[i], pas: choix[i].pas, trans: choix[i].trans, px: Int32Array.from(seaux[i]), lab: frontPix[Math.round(tI[i] / 60)] });
+    var iso = isochrones(arr, wp, nW, W, H, frontMin, frontPix, pixM, PAS_ISO);
 
-    var wpF = wp.slice(0, nW), wh = new Float32Array(nW), wv = new Float32Array(nW);
-    for (i = 0; i < nW; i++) { wh[i] = hMax[wpF[i]]; wv[i] = vMax[wpF[i]]; }
-    var snapOff = new Float64Array(snaps.length + 1);
-    for (i = 0; i < snaps.length; i++) snapOff[i + 1] = snapOff[i] + snaps[i].length;
-    var snapData = new Uint16Array(snapOff[snaps.length]);
-    for (i = 0; i < snaps.length; i++) snapData.set(snaps[i], snapOff[i]);
+    var Vcharge = 0;
+    for (k = 0; k < Gr.nL; k++) Vcharge += Gr.S[Gr.L[k]] * airePix(Gr.L[k]);
+    var wpF = wp.slice(0, nW), wh = new Float32Array(nW), wv = new Float32Array(nW), wc = new Float32Array(nW);
+    for (i = 0; i < nW; i++) { wh[i] = hMax[wpF[i]]; wv[i] = vMax[wpF[i]]; wc[i] = Gr.cMax[wpF[i]]; }
+    var pq = clichesPaquet(snaps);
     return {
-      arr: arr, iso: iso, wp: wpF, wh: wh, wv: wv,
-      snapT: Float64Array.from(snapT), snapOff: snapOff, snapData: snapData,
+      arr: arr, iso: iso, wp: wpF, wh: wh, wv: wv, wc: wc,
+      snapT: Float64Array.from(snapT), snapOff: pq.snapOff, snapData: pq.snapData,
       info: {
         zres: zres, zf: zf, Bd: lig.Bd, nBreche: nB, qMax: qMax, tFin: tFin, V0: E.V, Vreste: Vres,
         perduMer: perduMer, perduBord: perduBord, fin: fin, frontKm: Rmax / 1000, frontMin: frontMin,
         nMouilles: nW, breche: br.pied, parement: br.parement, mode: E.mode,
-        nRetenue: nRetenue, manning: N_MANNING
+        nRetenue: nRetenue, manning: N_MANNING,
+        boue: { d: D_GRAIN, Vero: Gr.Vero, Vdep: Gr.Vdep, Vsortie: Gr.Vsortie, Vcharge: Vcharge }
       }
     };
+  }
+
+  /* ═══ COULÉE DE LAVE ═════════════════════════════════════════════
+     Film mince de Bingham (approximation de lubrification, inertie
+     négligée : nombre de Reynolds ≪ 1) ; flux par unité de largeur
+     q = ρ·g·S·Y²·(3ĥ − Y) / (6μ), Y = ĥ − τy/(ρ·g·S) (Liu & Mei 1989,
+     J. Fluid Mech. 207:505 ; Balmforth et al. 2000, J. Fluid Mech.
+     403:37), nul sous le seuil (la lave s'arrête) ; thermo-rhéologie de
+     FLOWGO (Harris & Rowland 2001, Bull. Volcanol. 63:20 ; PyFLOWGO,
+     Chevrel et al. 2018, Comput. Geosci. 111:167), appliquée pixel par
+     pixel : cristaux φ = φ0 + (Te − T)·Δφ/(Te − Ts) ; viscosité du bain
+     fondu GRD (Giordano, Russell & Dingwell 2008, EPSL 271:123) ×
+     Einstein-Roscoe (1 − 1,51·φ)^(−2,5) ; seuil 0,01·(e^(0,08·(Te − T))
+     − 1) + 6500·φ^2,85 Pa (Dragoni 1989, Ryerson et al. 1988) ; pertes :
+     rayonnement de la surface, croûte à 773 K sur la fraction
+     f = fc·e^(α·v), fissures chaudes à T − 140 K ailleurs, convection
+     forcée par un vent de 5 m/s, conduction vers le sol à 773 K ;
+     inertie thermique sensible et latente (c + L·Δφ/(Te − Ts),
+     L = 350 kJ/kg) ; figeage sous Ts, la lave figée devient relief
+     (MAGFLOW : Vicari et al. 2007, Environ. Model. Softw. 22:1465) ;
+     schéma implicite en niveau (Euler rétrograde, deux passes de Picard
+     sur la diffusivité, gradient conjugué préconditionné par la
+     diagonale) ; chaleur transportée par les flux (donneur amont,
+     mélange convexe : bornée pour tout pas). Validation : essaiHuppert()
+     (étalement visqueux, solution exacte). */
+  var LAVE_RHO = 2600, LAVE_CP = 1150, LAVE_EPS = 0.95, SIGMA_SB = 5.670374e-8, T_AIR = 293.15;
+  var LAVE_L = 350000;         /* J/kg : chaleur latente de cristallisation (FLOWGO) */
+  var T_CROUTE = 773.15, T_TAMPON = 140, T_BASE = 773.15;   /* K (FLOWGO) */
+  var H_CONV = 0.0036 * 0.4412 * 1099 * 5;   /* W/m²/K : ch·ρair·cair·vent (FLOWGO) */
+  var K_LAVE = 0.87;           /* W/m/K : (1,929 − 1,554·0,64)² (FLOWGO, vésicules 0,64) */
+  var H_ARRIVEE_LAVE = 0.10;   /* m de lave (fluide ou figée) qui date l'arrivée */
+  var DT_LAVE_MAX = 120;       /* s */
+  var DT_LAVE_MIN = 0.01;      /* s */
+  var DH_CIBLE = 0.5;          /* m : variation de lame visée par pas */
+  var T_CALME_LAVE = 6 * 3600; /* s sans pixel nouveau après l'éruption → fin */
+  var T_APRES_LAVE = 30 * 86400;
+  var MARGE_BOITE = 16;        /* pixels ajoutés quand la lave approche du bord de la boîte */
+  var PCG_TOL = 1e-4, PCG_MAX = 4000;
+  var PAS_ISO_LAVE = [1, 2, 5, 10, 15, 20, 30, 60, 120, 180, 360, 720, 1440];   /* min */
+
+  /* ── laveCristaux ── E : lave L, T (K) → T : croissance linéaire de φ0
+     à φ0 + Δφ entre Te et Ts (FLOWGO « basic ») → S : φ. */
+  function laveCristaux(L, T) {
+    var f = (L.Te - T) / (L.Te - L.Ts); f = f < 0 ? 0 : f > 1 ? 1 : f;
+    return L.phi0 + L.dphi * f;
+  }
+  /* ── laveViscosite ── E : lave L, T → T : GRD × Einstein-Roscoe → S : μ (Pa·s). */
+  function laveViscosite(L, T) {
+    var phi = laveCristaux(L, T), g = 1 - 1.51 * phi;
+    return Math.pow(10, L.A + L.B / (T - L.C)) * Math.pow(g > 0.01 ? g : 0.01, -2.5);
+  }
+  /* ── laveSeuilT ── E : lave L, T → T : Dragoni 1989 + Ryerson 1988 → S : τy (Pa). */
+  function laveSeuilT(L, T) {
+    var phi = laveCristaux(L, T);
+    return 0.01 * (Math.exp(0.08 * Math.max(0, L.Te - T)) - 1) + 6500 * Math.pow(phi, 2.85);
+  }
+  /* ── lavePertes ── E : lave L, T (K), vitesse v (m/s), lame h → T :
+     fraction de croûte f = fc·e^(α·v) ; rayonnement ε·σ·[f(Tc⁴ − Ta⁴) +
+     (1 − f)((T − 140)⁴ − Ta⁴)] ; convection forcée sur la température
+     de surface caractéristique ; conduction k·(T − Tbase)/(h/2) → S :
+     flux perdu (W/m²). */
+  function lavePertes(L, T, v, h) {
+    var f = L.fc * Math.exp(L.alpha * v), Th = Math.max(T_AIR, T - T_TAMPON);
+    var c4 = Math.pow(T_CROUTE, 4), h4 = Math.pow(Th, 4), a4 = Math.pow(T_AIR, 4);
+    var ray = LAVE_EPS * SIGMA_SB * (f * (c4 - a4) + (1 - f) * (h4 - a4));
+    var conv = H_CONV * (Math.pow(f * c4 + (1 - f) * h4, 0.25) - T_AIR);
+    var cond = K_LAVE * Math.max(0, T - T_BASE) / Math.max(0.05, h / 2);
+    return ray + conv + cond;
+  }
+
+  /* ── calculLave ── E : {elev, W, H, dy, dxR, vent (pixel de l'évent),
+     lave {nom, A, B, C (VFT de GRD), Te, Ts (K), phi0, dphi (cristaux à
+     l'évent et gagnés jusqu'à Ts), fc, alpha (croûte), Q (m³/s), duree (s)}},
+     envoyer → T : boîte de calcul autour de la lave (agrandie par
+     MARGE_BOITE) ; à chaque pas : diffusivités de face (lame amont
+     au-dessus du seuil de face, pente de la surface, viscosité et seuil
+     à la température amont), système implicite en niveau (mer et bords :
+     niveau imposé au sol, la lave qui y entre sort ; sans donnée : mur),
+     débit Q à l'évent tant que t < durée ; pas refusé et divisé par deux
+     si une lame devient négative de plus de 5 cm ; chaleur, rayonnement,
+     figeage (lave figée ajoutée au relief) ; pas suivant borné par
+     DT_LAVE_MAX, 1,5 × pas, ½ pixel à la vitesse maximale et DH_CIBLE ;
+     fin quand plus aucun pixel n'est atteint pendant T_CALME_LAVE après
+     l'éruption (ou plus de lave fluide) → S : même structure que calcul
+     (wh = épaisseur finale, wv = vitesse maximale, clichés = épaisseur
+     totale en cm, info de lave). */
+  function calculLave(E, envoyer) {
+    var W = E.W, H = E.H, N = W * H, dy = E.dy, dxR = E.dxR, L = E.lave, p, i, k;
+    var z = Float64Array.from(E.elev), h = new Float64Array(N), T = new Float32Array(N), dep = new Float32Array(N);
+    var m = new Uint8Array(N);
+    for (p = 0; p < N; p++) {
+      var v0 = z[p], r0 = (p / W) | 0, c0 = p - r0 * W;
+      if (v0 >= 9000) m[p] = M_MUR;
+      else if (v0 <= 0.5) m[p] = M_MER;
+      else if (r0 === 0 || c0 === 0 || r0 === H - 1 || c0 === W - 1) m[p] = M_BORD;
+    }
+    var vent = E.vent;
+    if (m[vent]) throw new Error('évent en mer, au bord ou sans donnée');
+    var aire = function (q) { return dxR[(q / W) | 0] * dy; };
+    var visc = function (t) { return Math.pow(10, L.A + L.B / (t - L.C)); };
+    var rV = (vent / W) | 0, cV = vent - rV * W, dxV = dxR[rV], pixM = Math.sqrt(dxV * dy);
+
+    /* boîte de calcul et tableaux locaux */
+    var bR0, bR1, bC0, bC1, bW, bH, nb, KE, KS, dg, rhs, x, rr, zz, pp, ap, typ, act, nAct;
+    function boite(r0b, r1b, c0b, c1b) {
+      bR0 = Math.max(0, r0b); bR1 = Math.min(H - 1, r1b); bC0 = Math.max(0, c0b); bC1 = Math.min(W - 1, c1b);
+      bW = bC1 - bC0 + 1; bH = bR1 - bR0 + 1; nb = bW * bH;
+      KE = new Float64Array(nb); KS = new Float64Array(nb); dg = new Float64Array(nb); rhs = new Float64Array(nb);
+      x = new Float64Array(nb); rr = new Float64Array(nb); zz = new Float64Array(nb); pp = new Float64Array(nb);
+      ap = new Float64Array(nb); typ = new Uint8Array(nb); act = new Int32Array(nb);
+      for (var j = 0; j < nb; j++) {
+        var q = (bR0 + ((j / bW) | 0)) * W + bC0 + (j % bW);
+        typ[j] = m[q] === M_MUR ? 0 : (m[q] === M_MER || m[q] === M_BORD) ? 2 : 1;
+      }
+    }
+    boite(rV - MARGE_BOITE, rV + MARGE_BOITE, cV - MARGE_BOITE, cV + MARGE_BOITE);
+    var glob = function (j) { return (bR0 + ((j / bW) | 0)) * W + bC0 + (j % bW); };
+
+    /* diffusivités de face (m²/s par m de face ÷ distance) depuis la lame hk */
+    function faces(hk) {
+      for (var j = 0; j < nb; j++) {
+        KE[j] = 0; KS[j] = 0;
+        if (!typ[j]) continue;
+        var rl = (j / bW) | 0, cl = j - rl * bW, q = glob(j), r = bR0 + rl, dx = dxR[r];
+        for (var f = 0; f < 2; f++) {
+          var jn = f ? j + bW : j + 1;
+          if (f ? rl >= bH - 1 : cl >= bW - 1) continue;
+          if (!typ[jn]) continue;
+          var qn = f ? q + W : q + 1, ep = z[q] + hk[q], en = z[qn] + hk[qn];
+          var up = ep >= en ? q : qn, seuil = Math.max(z[q], z[qn]), hu = (ep >= en ? ep : en) - seuil;
+          if (hu <= 1e-4 || hk[up] <= 0 || T[up] <= L.Ts) continue;
+          var dist = f ? dy : dx, larg = f ? 0.5 * (dx + dxR[Math.min(H - 1, r + 1)]) : dy;
+          var S = Math.abs(ep - en) / dist; if (S < 1e-9) continue;
+          var Y = hu - (L.sansSeuil ? 0 : laveSeuilT(L, T[up]) / (LAVE_RHO * G * S)); if (Y <= 0) continue;
+          var K = LAVE_RHO * G * Y * Y * (3 * hu - Y) / (6 * (L.isotherme ? visc(T[up]) : laveViscosite(L, T[up]))) * larg / dist;
+          if (f) KS[j] = K; else KE[j] = K;
+        }
+      }
+    }
+
+    /* système implicite en niveau, gradient conjugué préconditionné */
+    function resoudre(dt, hn, src) {
+      nAct = 0;
+      for (var j = 0; j < nb; j++) {
+        if (typ[j] !== 1) continue;
+        var q = glob(j), a = aire(q) / dt, kk = KE[j] + KS[j] + (j % bW > 0 ? KE[j - 1] : 0) + (j >= bW ? KS[j - bW] : 0);
+        dg[j] = a + kk; rhs[j] = a * (z[q] + hn[q]) + (q === vent ? src : 0); x[j] = z[q] + hn[q];
+        if (kk > 0) act[nAct++] = j; else x[j] = rhs[j] / dg[j];
+      }
+      /* voisins à niveau imposé (mer, bord) : passés au second membre */
+      for (j = 0; j < nb; j++) {
+        if (typ[j] !== 2) continue;
+        var zj = z[glob(j)];
+        if (j % bW < bW - 1 && typ[j + 1] === 1) rhs[j + 1] += KE[j] * zj;
+        if (j % bW > 0 && typ[j - 1] === 1) rhs[j - 1] += KE[j - 1] * zj;
+        if (j + bW < nb && typ[j + bW] === 1) rhs[j + bW] += KS[j] * zj;
+        if (j >= bW && typ[j - bW] === 1) rhs[j - bW] += KS[j - bW] * zj;
+      }
+      var matvec = function (v, out) {
+        for (var a2 = 0; a2 < nAct; a2++) {
+          var jj = act[a2], s = dg[jj] * v[jj], cl = jj % bW;
+          if (cl < bW - 1 && typ[jj + 1] === 1) s -= KE[jj] * v[jj + 1];
+          if (cl > 0 && typ[jj - 1] === 1) s -= KE[jj - 1] * v[jj - 1];
+          if (jj + bW < nb && typ[jj + bW] === 1) s -= KS[jj] * v[jj + bW];
+          if (jj >= bW && typ[jj - bW] === 1) s -= KS[jj - bW] * v[jj - bW];
+          out[jj] = s;
+        }
+      };
+      matvec(x, ap);
+      var rz = 0, a3, jj;
+      for (a3 = 0; a3 < nAct; a3++) { jj = act[a3]; rr[jj] = rhs[jj] - ap[jj]; zz[jj] = rr[jj] / dg[jj]; pp[jj] = zz[jj]; rz += rr[jj] * zz[jj]; }
+      for (var it = 0; it < PCG_MAX; it++) {
+        var err = 0;
+        for (a3 = 0; a3 < nAct; a3++) { jj = act[a3]; var e = Math.abs(rr[jj] / dg[jj]); if (e > err) err = e; }
+        if (err < PCG_TOL) break;
+        matvec(pp, ap);
+        var pAp = 0; for (a3 = 0; a3 < nAct; a3++) { jj = act[a3]; pAp += pp[jj] * ap[jj]; }
+        if (pAp <= 0) break;
+        var al = rz / pAp, rz2 = 0;
+        for (a3 = 0; a3 < nAct; a3++) { jj = act[a3]; x[jj] += al * pp[jj]; rr[jj] -= al * ap[jj]; zz[jj] = rr[jj] / dg[jj]; rz2 += rr[jj] * zz[jj]; }
+        var be = rz2 / rz; rz = rz2;
+        for (a3 = 0; a3 < nAct; a3++) { jj = act[a3]; pp[jj] = zz[jj] + be * pp[jj]; }
+      }
+    }
+
+    var arr = new Float32Array(N).fill(-1), vMax = new Float32Array(N);
+    var capW = 1 << 14, nW = 0, wp = new Int32Array(capW);
+    var hEtoile = new Float64Array(N), hDemi = new Float64Array(N);
+    var vPas = new Float32Array(N), sortie = new Float64Array(N), chInV = new Float64Array(N), chInT = new Float64Array(N);
+    var Rmax = 0, pixFront = vent, frontMin = [0], frontPix = [vent], tDernier = 0;
+    var Vemis = 0, Vmer = 0, Vbord = 0, Vcoupe = 0, nRefus = 0, nPas = 0;
+    var snaps = [], snapT = [], nSnapTot = 0, dtCli = DT_CLICHE, nEnv = 0;
+    var epais = function (q) { var x2 = Math.round((h[q] + dep[q]) * 100); return x2 > 65535 ? 65535 : x2; };
+    function cliche(t) {
+      var d = new Uint16Array(nW);
+      for (var j = 0; j < nW; j++) d[j] = epais(wp[j]);
+      snaps.push(d); snapT.push(t); nSnapTot += nW;
+      if (nSnapTot > CLICHE_MAX) {
+        var s2 = [], t2 = []; nSnapTot = 0;
+        for (var j2 = 0; j2 < snaps.length; j2 += 2) { s2.push(snaps[j2]); t2.push(snapT[j2]); nSnapTot += snaps[j2].length; }
+        snaps = s2; snapT = t2; dtCli *= 2;
+      }
+    }
+    function instant(t, q) {
+      var mp = wp.slice(nEnv, nW), ma = new Float32Array(mp.length), pr = new Uint16Array(nW);
+      for (var j = 0; j < mp.length; j++) ma[j] = arr[mp[j]];
+      for (j = 0; j < nW; j++) pr[j] = epais(wp[j]);
+      nEnv = nW;
+      envoyer({ type: 'instant', t: t, frontKm: Rmax / 1000, q: q, reste: Math.max(0, 1 - Vemis / (L.Q * L.duree)), p: mp, a: ma, prof: pr },
+              [mp.buffer, ma.buffer, pr.buffer]);
+    }
+
+    if (E.hInit) for (p = 0; p < N; p++) if (E.hInit[p] > 0) { h[p] = E.hInit[p]; T[p] = L.Te; }
+    var t = 0, dt = 1, mesure = Date.now(), nLiq = 1, tStop = L.tMax || L.duree + T_APRES_LAVE;
+    cliche(0);
+    while (t < tStop) {
+      var Qc = t < L.duree ? L.Q : 0;
+      if (t < L.duree && t + dt > L.duree) dt = L.duree - t;
+      /* deux passes de Picard */
+      faces(h);
+      resoudre(dt, h, Qc);
+      var ok = true, j;
+      for (j = 0; j < nb; j++) if (typ[j] === 1) { p = glob(j); hEtoile[p] = Math.max(0, x[j] - z[p]); }
+      for (j = 0; j < nb; j++) if (typ[j] === 1) { p = glob(j); hDemi[p] = 0.5 * (h[p] + hEtoile[p]); }
+      faces(hDemi);
+      resoudre(dt, h, Qc);
+      var coupe = 0;
+      for (j = 0; j < nb; j++) {
+        if (typ[j] !== 1) continue;
+        p = glob(j); var hn = x[j] - z[p];
+        if (hn < -0.05) { ok = false; break; }
+        if (hn < 0) coupe -= hn * aire(p);
+      }
+      if (!ok && dt > DT_LAVE_MIN) { dt *= 0.5; nRefus++; continue; }
+      /* flux de face définitifs, chaleur transportée */
+      var vmaxPas = 0, dhMax = 0;
+      for (j = 0; j < nb; j++) { if (typ[j]) { p = glob(j); sortie[p] = 0; chInV[p] = 0; chInT[p] = 0; vPas[p] = 0; } }
+      for (j = 0; j < nb; j++) {
+        if (!typ[j]) continue;
+        var rl = (j / bW) | 0, cl = j - rl * bW, q0 = glob(j);
+        for (var f = 0; f < 2; f++) {
+          var K = f ? KS[j] : KE[j]; if (!K) continue;
+          var jn = f ? j + bW : j + 1, qn = f ? q0 + W : q0 + 1;
+          var ea = typ[j] === 2 ? z[q0] : x[j], eb = typ[jn] === 2 ? z[qn] : x[jn];
+          var F = K * (ea - eb) * dt, don = F > 0 ? q0 : qn, rec = F > 0 ? qn : q0, Fa = Math.abs(F);
+          sortie[don] += Fa;
+          if (m[rec] === M_MER) Vmer += Fa; else if (m[rec] === M_BORD) Vbord += Fa;
+          else { chInV[rec] += Fa; chInT[rec] += Fa * T[don]; }
+          var dist = f ? dy : dxR[bR0 + rl], larg = f ? dxR[bR0 + rl] : dy;
+          var hu = Math.max(z[q0] + h[q0], z[qn] + h[qn]) - Math.max(z[q0], z[qn]);
+          if (hu > 0.01) { var vit = Fa / dt / (larg * hu); if (vit > vmaxPas) vmaxPas = vit; if (vit > vMax[don]) vMax[don] = vit; if (vit > vPas[don]) vPas[don] = vit; }
+          void dist;
+        }
+      }
+      t += dt; nPas++;
+      Vemis += Qc * dt; Vcoupe += coupe;
+      /* nouvelles lames, température, rayonnement, figeage, arrivées */
+      nLiq = 0;
+      var bordAtteint = false;
+      for (j = 0; j < nb; j++) {
+        if (typ[j] !== 1) continue;
+        p = glob(j);
+        var hOld = h[p], hNew = Math.max(0, x[j] - z[p]), A = aire(p);
+        if (Math.abs(hNew - hOld) > dhMax) dhMax = Math.abs(hNew - hOld);
+        var garde = Math.max(0, hOld * A - sortie[p]), srcV = p === vent ? Qc * dt : 0;
+        var den = garde + chInV[p] + srcV;
+        var Tn = den > 0 ? (garde * T[p] + chInT[p] + srcV * L.Te) / den : 0;
+        h[p] = hNew;
+        if (hNew > 0 && L.isotherme) nLiq++;
+        else if (hNew > 0) {
+          Tn -= dt * lavePertes(L, Tn, vPas[p], hNew) / (LAVE_RHO * hNew * (LAVE_CP + (Tn > L.Ts && Tn < L.Te ? LAVE_L * L.dphi / (L.Te - L.Ts) : 0)));
+          if (Tn < T_AIR) Tn = T_AIR;
+          if (Tn <= L.Ts || hNew < 1e-3) { dep[p] += hNew; z[p] += hNew; h[p] = 0; Tn = 0; }
+          else nLiq++;
+        } else Tn = 0;
+        T[p] = Tn;
+        if (arr[p] < 0 && h[p] + dep[p] >= H_ARRIVEE_LAVE) {
+          arr[p] = t; tDernier = t;
+          if (nW === capW) { capW *= 2; var nw = new Int32Array(capW); nw.set(wp); wp = nw; }
+          wp[nW++] = p;
+          var rr2 = (p / W) | 0, cc2 = p - rr2 * W, dd = Math.hypot((cc2 - cV) * dxV, (rr2 - rV) * dy);
+          if (dd > Rmax) { Rmax = dd; pixFront = p; }
+        }
+        if (h[p] > 0) {
+          var rl2 = ((j / bW) | 0), cl2 = j % bW;
+          if (rl2 < 2 || cl2 < 2 || rl2 > bH - 3 || cl2 > bW - 3) bordAtteint = true;
+        }
+      }
+      if (bordAtteint) {
+        var nR0 = bR0, nR1 = bR1, nC0 = bC0, nC1 = bC1;
+        for (j = 0; j < nb; j++) {
+          if (typ[j] !== 1 || h[glob(j)] <= 0) continue;
+          var rl3 = (j / bW) | 0, cl3 = j % bW;
+          if (rl3 < 2) nR0 = bR0 - MARGE_BOITE; if (rl3 > bH - 3) nR1 = bR1 + MARGE_BOITE;
+          if (cl3 < 2) nC0 = bC0 - MARGE_BOITE; if (cl3 > bW - 3) nC1 = bC1 + MARGE_BOITE;
+        }
+        boite(nR0, nR1, nC0, nC1);
+      }
+      while (frontMin.length * 60 <= t) { frontMin.push(Rmax); frontPix.push(pixFront); }
+      if (t - snapT[snapT.length - 1] >= dtCli) cliche(t);
+      if (Date.now() - mesure > DT_INSTANT_MS) { mesure = Date.now(); instant(t, Qc); }
+      if (!L.tMax && t >= L.duree && (nLiq === 0 || t - tDernier > T_CALME_LAVE)) break;
+      /* pas suivant */
+      var dtN = Math.min(DT_LAVE_MAX, dt * 1.5);
+      if (vmaxPas > 0) dtN = Math.min(dtN, 0.5 * Math.min(dxV, dy) / vmaxPas);
+      if (dhMax > 0) dtN = Math.min(dtN, dt * DH_CIBLE / dhMax);
+      dt = Math.max(DT_LAVE_MIN, dtN);
+    }
+    instant(t, 0);
+    var tFin = t;
+    var iso = isochrones(arr, wp, nW, W, H, frontMin, frontPix, pixM, PAS_ISO_LAVE);
+    var Vliq = 0, Vfig = 0;
+    for (i = 0; i < nW; i++) { p = wp[i]; Vliq += h[p] * aire(p); Vfig += dep[p] * aire(p); }
+    var wpF = wp.slice(0, nW), wh = new Float32Array(nW), wv = new Float32Array(nW);
+    for (i = 0; i < nW; i++) { wh[i] = h[wpF[i]] + dep[wpF[i]]; wv[i] = vMax[wpF[i]]; }
+    var pq = clichesPaquet(snaps);
+    void k;
+    return {
+      arr: arr, iso: iso, wp: wpF, wh: wh, wv: wv, wc: null,
+      snapT: Float64Array.from(snapT), snapOff: pq.snapOff, snapData: pq.snapData,
+      info: {
+        lave: true, nom: L.nom, tFin: tFin, V0: L.Q * L.duree, Vemis: Vemis, Vliq: Vliq, Vfig: Vfig,
+        perduMer: Vmer, perduBord: Vbord, Vcoupe: Vcoupe, nPas: nPas, nRefus: nRefus,
+        fin: Vmer > 0 ? 'mer' : (Vbord > 0 ? 'bord' : ''), frontKm: Rmax / 1000, frontMin: frontMin,
+        nMouilles: nW, vent: vent, Q: L.Q, qMax: L.Q, duree: L.duree
+      }
+    };
+  }
+
+
+  /* ── essaiHuppert ── E : volume V (m³), viscosité μ (Pa·s), durée t
+     (s), maille dx (m) → T : calculLave sur un plan horizontal, lave
+     isotherme sans seuil, cylindre initial de 3 pixels de rayon ; rayon
+     du front (lame ≥ 1 cm) comparé à la solution de similitude de
+     Huppert (1982, J. Fluid Mech. 121:43) r = 0,894·(g·V³/(3ν))^(1/8)·t^(1/8)
+     → S : {rCalc, rHuppert (m), masse (écart relatif du volume)}. */
+  function essaiHuppert(V, mu, tFin, dx) {
+    V = V || 1e5; mu = mu || 1e4; tFin = tFin || 86400; dx = dx || 10;
+    var W = 201, H = 201, N = W * H, c = 100, z = new Float32Array(N).fill(100), h0 = new Float64Array(N), n0 = 0, p, r, cc;
+    for (r = 0; r < H; r++) for (cc = 0; cc < W; cc++) if (Math.hypot(r - c, cc - c) <= 3) n0++;
+    for (r = 0; r < H; r++) for (cc = 0; cc < W; cc++) if (Math.hypot(r - c, cc - c) <= 3) h0[r * W + cc] = V / (n0 * dx * dx);
+    var R = calculLave({ elev: z, W: W, H: H, dy: dx, dxR: new Float64Array(H).fill(dx), vent: c * W + c, hInit: h0,
+      lave: { nom: 'Huppert', A: Math.log10(mu), B: 0, C: 0, Te: 1400, Ts: 0, Q: 0, duree: 0, tMax: tFin, isotherme: true, sansSeuil: true } }, function () {});
+    var rMax = 0, vol = 0;
+    for (p = 0; p < N; p++) {
+      var e = R.snapData.length ? 0 : 0; void e;
+    }
+    var der = R.snapT.length - 1, off = R.snapOff[der];
+    for (var i = 0; i < R.wp.length; i++) {
+      p = R.wp[i]; var hh = R.wh[i];
+      vol += hh * dx * dx;
+      if (hh >= 0.01) { var d = Math.hypot(((p / W) | 0) - c, p % W - c) * dx; if (d > rMax) rMax = d; }
+    }
+    void off;
+    return { rCalc: rMax, rHuppert: 0.894 * Math.pow(G * V * V * V / (3 * mu / LAVE_RHO), 1 / 8) * Math.pow(tFin, 1 / 8), masse: (vol - V) / V };
   }
 
   /* ── essaiRitter ── E : h0 (m), longueur du bief (m), durée t (s),
@@ -613,7 +1103,7 @@ function BARRAGE_FABRIQUE() {
              xFront: xf, xRitter: (2 * Math.sqrt(G * h0) - 3 * Math.sqrt(G * H_ARRIVEE)) * t, masse: (V1 - V0) / V0 };
   }
 
-  return { calcul: calcul, essaiRitter: essaiRitter };
+  return { calcul: calcul, essaiRitter: essaiRitter, essaiHuppert: essaiHuppert };
 }
 
 /* ── BARRAGEWORKER ── lanceur : un Worker dont la source est
@@ -628,7 +1118,7 @@ const BARRAGEWORKER = (function () {
   function source() {
     return 'var BARRAGE=(' + BARRAGE_FABRIQUE.toString() + ')();\n' +
       'onmessage=function(e){try{var R=BARRAGE.calcul(e.data,function(m,tr){postMessage(m,tr||[]);});' +
-      'var tr=[R.arr.buffer,R.wp.buffer,R.wh.buffer,R.wv.buffer,R.snapT.buffer,R.snapOff.buffer,R.snapData.buffer];' +
+      'var tr=[R.arr.buffer,R.wp.buffer,R.wh.buffer,R.wv.buffer,R.snapT.buffer,R.snapOff.buffer,R.snapData.buffer];if(R.wc)tr.push(R.wc.buffer);' +
       'R.iso.forEach(function(i){tr.push(i.px.buffer);});' +
       'postMessage({type:"fin",res:R},tr);}catch(x){postMessage({type:"erreur",msg:String(x&&x.message||x)});}};';
   }
