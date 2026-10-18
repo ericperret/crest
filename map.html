@@ -2,13 +2,16 @@
 <html lang="fr">
 <head>
 <!-- ═══════════════════════════════════════════════════════════════════
-     FICHIER : map.html - v27/09/2026
+     FICHIER : map.html - v18/10/2026
      OBJET   : carte mondiale des tuiles Copernicus GLO-30 (1°×1°) : repère
                les tuiles présentes dans un dossier local, donne la commande
                AWS S3 des manquantes, ouvre une tuile dans dsm.html, ou
                assemble une zone rectangulaire sur plusieurs tuiles et
                l'envoie à dsm.html.
      AUTEUR  : Eric P.
+     HISTORIQUE : v18/10/2026 charte graphique AZS (palette ardoise / ambre /
+               cyan, marque AZS avec lien de retour vers www.azs.fr, polices
+               système) ; couleurs propres à chaque couche inchangées
      RELECTURE : Opus 5.5
      LICENCE : CC BY-NC 4.0 — source à citer : https://github.com/ericperret/crest/
                usage commercial interdit sauf accord écrit de l'auteur (voir LICENSE)
@@ -24,37 +27,41 @@
 <script src="dsm-carte.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-html,body{width:100%;height:100%;overflow:hidden;background:#0d1117;
-  color:#cdd6f4;font-family:'Segoe UI',Arial,sans-serif}
+html,body{width:100%;height:100%;overflow:hidden;background:#0e1418;
+  color:#dfe7ec;font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif}
 #topbar{position:fixed;top:0;left:0;right:0;height:42px;z-index:2000;
   display:flex;align-items:center;gap:12px;padding:0 16px;
-  background:rgba(13,17,23,.88);backdrop-filter:blur(4px);
-  border-bottom:1px solid #2a2d3d}
-#topbar h1{font-size:.82rem;font-weight:600;color:#b4befe;white-space:nowrap}
-.btn{font-size:.70rem;padding:3px 11px;border:1px solid #45475a;border-radius:4px;
-  background:#181825;color:#cdd6f4;cursor:pointer;white-space:nowrap}
-.btn:hover{background:#2a2d3d;border-color:#89b4fa}
-.btn.active{background:#2a2d3d;border-color:#f38ba8;color:#f38ba8}
+  background:rgba(14,20,24,.88);backdrop-filter:blur(4px);
+  border-bottom:1px solid #26343e;overflow-x:auto;scrollbar-width:none}
+#topbar::-webkit-scrollbar{display:none}
+#topbar h1{font-size:.86rem;font-weight:700;color:#dfe7ec;white-space:nowrap;letter-spacing:-.1px}
+.btn{font-size:.70rem;padding:4px 11px;border:1px solid #33434e;border-radius:6px;
+  background:#18222a;color:#dfe7ec;cursor:pointer;white-space:nowrap;transition:border-color .15s,color .15s}
+.btn:hover{background:#26343e;border-color:#f0a63a}
+.azs{font:800 20px/1 ui-monospace,"SFMono-Regular",Menlo,Consolas,"Liberation Mono",monospace;letter-spacing:-1px;color:#f0a63a;
+  text-decoration:none;padding-right:12px;border-right:1px solid #26343e;flex:none}
+.azs:hover{color:#ffcf7a}
+.btn.active{background:#f0a63a;border-color:#f0a63a;color:#111}
 .btn:disabled{opacity:.4;cursor:default}
 #stats{font-size:.65rem;color:#a6e3a1}
 #map{position:fixed;top:42px;left:0;right:0;bottom:0}
-#tip{position:fixed;z-index:3000;background:rgba(13,17,23,.92);
-  color:#cdd6f4;font-size:.62rem;font-family:'Courier New',monospace;
-  padding:3px 9px;border-radius:4px;border:1px solid #2a2d3d;
+#tip{position:fixed;z-index:3000;background:rgba(14,20,24,.92);
+  color:#dfe7ec;font-size:.62rem;font-family:ui-monospace,"SFMono-Regular",Menlo,Consolas,"Liberation Mono",monospace;
+  padding:3px 9px;border-radius:4px;border:1px solid #26343e;
   pointer-events:none;display:none;white-space:nowrap}
 
 #aws-panel{position:fixed;z-index:3000;bottom:14px;right:14px;
-  background:rgba(13,17,23,.95);border:1px solid #2a2d3d;border-radius:6px;
+  background:rgba(24,34,42,.96);border:1px solid #26343e;border-radius:8px;
   padding:12px 14px;font-size:.65rem;max-width:480px;display:none;
   box-shadow:0 4px 20px rgba(0,0,0,.5)}
-#aws-panel h2{font-size:.70rem;color:#89dceb;margin-bottom:8px;font-weight:600}
-#aws-cmd{font-family:'Courier New',monospace;font-size:.60rem;color:#a6e3a1;
-  background:#0d1117;padding:8px 10px;border-radius:4px;word-break:break-all;
-  white-space:pre-wrap;line-height:1.6;border:1px solid #2a2d3d;margin-bottom:8px;
+#aws-panel h2{font-size:.70rem;color:#f0a63a;margin-bottom:8px;font-weight:600}
+#aws-cmd{font-family:ui-monospace,"SFMono-Regular",Menlo,Consolas,"Liberation Mono",monospace;font-size:.60rem;color:#a6e3a1;
+  background:#0e1418;padding:8px 10px;border-radius:4px;word-break:break-all;
+  white-space:pre-wrap;line-height:1.6;border:1px solid #26343e;margin-bottom:8px;
   cursor:pointer;user-select:all}
-#aws-cmd:hover{border-color:#89dceb}
-.aws-note{color:#6c7086;font-size:.58rem;line-height:1.5}
-.aws-note b{color:#cdd6f4}
+#aws-cmd:hover{border-color:#5cc8d6}
+.aws-note{color:#8fa1ad;font-size:.58rem;line-height:1.5}
+.aws-note b{color:#dfe7ec}
 #aws-close{float:right;cursor:pointer;color:#f38ba8;font-size:.75rem;
   margin-top:-2px;background:none;border:none;padding:0}
 </style>
@@ -62,6 +69,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0d1117;
 <body>
 
 <div id="topbar">
+  <a class="azs" href="https://www.azs.fr/" title="www.azs.fr">AZS</a>
   <h1>Copernicus DSM COG-10</h1>
   <button class="btn" id="btn-open">📂 Ouvrir copernicus/</button>
   <input type="file" id="folder-in" webkitdirectory style="display:none">
@@ -69,7 +77,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0d1117;
   <button class="btn" id="btn-sel" title="Glisser un rectangle rouge sur la carte, puis Entrée">🔲 Sélection zone</button>
   <button class="btn" id="btn-valider" style="display:none" title="Entrée">✔ Charger la zone</button>
   <span id="stats">Aucun dossier scanné</span>
-  <span id="dl-status" style="font-size:.62rem;color:#89b4fa;display:none"></span>
+  <span id="dl-status" style="font-size:.62rem;color:#5cc8d6;display:none"></span>
 </div>
 
 <div id="map"></div>
@@ -196,7 +204,7 @@ map.on('mousemove', e => {
   } else {
     carteEl.style.cursor = 'pointer';
     tip.textContent = '☁ ' + name + ' — cliquer pour télécharger';
-    tip.style.color = '#89b4fa';
+    tip.style.color = '#5cc8d6';
   }
   tip.style.display = 'block';
   tip.style.left = (e.ev.clientX + 14) + 'px';
